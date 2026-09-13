@@ -1,0 +1,17 @@
+[Unit]
+Description=Teltonika TCP -> MQTT gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=debian
+WorkingDirectory=/home/debian/teltonika
+ExecStart=/home/debian/teltonika/bin/python3 /home/debian/teltonika/teltonika2mqtt.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

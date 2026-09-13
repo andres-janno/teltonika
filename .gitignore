@@ -1,0 +1,23 @@
+# Python venv (created directly in this project root)
+bin/
+include/
+lib/
+lib64
+pyvenv.cfg
+share/
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Environment / secrets
+.env
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
+*.log
