@@ -75,3 +75,11 @@ parameter names. On this device model, AVL IDs 701, 705, 709, 713, 729 and
 730 carry EYE sensor readings (temperature, battery, humidity, magnet state,
 counters) rather than the CAN/FMS/Tachograph fields those IDs are used for
 on other models — adjust the mapping if you connect a different device type.
+
+## Development
+Mapping from server to local filesystem for development in code.
+```bash
+sshfs debian@uvn-243-120.tll07.zonevs.eu:/home/debian/teltonika ~/Progemine/teltonika -o allow_other
+cd ~/Progemine/teltonika
+code .
+```
