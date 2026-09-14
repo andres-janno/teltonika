@@ -134,3 +134,8 @@ sshfs debian@uvn-243-120.tll07.zonevs.eu:/home/debian/teltonika ~/Progemine/telt
 cd ~/Progemine/teltonika
 code .
 ```
+Tunnel to NodeRED
+```bash
+ssh -L 1880:localhost:1880 debian@uvn-243-120.tll07.zonevs.eu
+```
+Open in browser: http://localhost:1880/
