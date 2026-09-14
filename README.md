@@ -11,7 +11,12 @@ tracker devices and publishes decoded records to an MQTT broker.
 - Translates raw Teltonika IO IDs into named, unit-converted values
   (e.g. voltages in mV → V, ignition/movement as booleans, EYE sensor
   temperature/humidity/magnet state)
-- Publishes each record as JSON to `teltonika/<imei>/data`
+- Publishes FMC650 device data (GPS, voltage, ignition, etc.) as a flat JSON
+  object (one key per field, no nesting - ready for a TimescaleDB/Node-RED
+  style bridge) to `teltonika/<imei>/data`, and EYE sensor data the same way
+  to `teltonika/<imei>/eye` (includes `imei` and `mac`, see below). The raw,
+  untranslated IO map for each record is published separately to
+  `teltonika/<imei>/data/raw` and `teltonika/<imei>/eye/raw` for debugging.
 
 ## Requirements
 
@@ -67,6 +72,52 @@ After changing `teltonika2mqtt.py` or the unit file:
 sudo systemctl restart teltonika2mqtt.service   # after editing teltonika2mqtt.py
 sudo systemctl daemon-reload && sudo systemctl restart teltonika2mqtt.service   # after editing the unit file
 ```
+
+## Tracking which EYE sensor (attachment) is on which tractor
+
+The EYE sensor lives on an implement/attachment, not the tractor itself, so
+it gets moved between tractors (FMC650 devices) over time. Its BLE MAC
+address isn't sent over the AVL data stream, so it can't be read from the
+data automatically — it's tracked in [imei_eye_mac.json](imei_eye_mac.json)
+instead, mapping each tractor's IMEI to the MAC of the attachment currently
+hitched to it:
+
+```json
+{
+  "860848081816598": "AA:BB:CC:DD:EE:FF"
+}
+```
+
+When you move an attachment to a different tractor, update this file. It is
+reloaded automatically (checked every 30s) — no restart needed. Each
+`teltonika/<imei>/eye` MQTT message includes both `imei` (the tractor) and
+`mac` (the attachment) at the time it was sent, so usage duration per
+attachment can be computed downstream by grouping messages by `mac`,
+independent of which tractor it was on.
+
+## Wiring up to TimescaleDB (Node-RED)
+
+`teltonika/<imei>/data` and `teltonika/<imei>/eye` carry flat JSON objects,
+one MQTT message per AVL record, so they can be piped straight into
+[node-red-contrib-timescaledb](https://flows.nodered.org/node/node-red-contrib-timescaledb).
+
+That node derives the `measurement` name from the MQTT topic using a mapping
+string, one segment per topic level. Our topics only have 3 levels
+(`teltonika` / `<imei>` / `data` or `eye`), so configure the node's topic
+mapping as:
+
+```
+-/device/measurement
+```
+
+`-` skips the `teltonika` prefix, `device` becomes the IMEI (tractor), and
+`measurement` becomes `data` or `eye`. With a JSON object payload the node
+takes each remaining top-level key as a field automatically, so no `field`
+position is needed in the mapping.
+
+If you see `Measurement is required (from topic mapping)`, the configured
+mapping string doesn't have a `measurement` position lining up with our
+topic's segment count — recheck it against the mapping above.
 
 ## IO mapping notes
 

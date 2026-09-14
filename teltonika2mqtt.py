@@ -1,4 +1,5 @@
 import asyncio
+import os
 import struct
 import json
 import datetime
@@ -7,6 +8,39 @@ import paho.mqtt.client as mqtt
 MQTT_BROKER = "127.0.0.1"
 MQTT_PORT = 1883
 TCP_PORT = 5027
+
+# Which EYE sensor (BLE MAC) is currently attached to which tractor (FMC650
+# IMEI). This pairing isn't sent over the AVL data stream - the EYE sensor
+# lives on the implement/attachment and gets moved between tractors, so it's
+# tracked here instead of hardcoded. Edit IMEI_EYE_MAC_FILE to reflect a swap;
+# it is reloaded automatically (see reload_imei_eye_mac_periodically) without
+# needing to restart the service.
+IMEI_EYE_MAC_FILE = "imei_eye_mac.json"
+IMEI_EYE_MAC_RELOAD_SECONDS = 30
+imei_eye_mac = {}
+
+def load_imei_eye_mac():
+    try:
+        with open(IMEI_EYE_MAC_FILE) as f:
+            data = json.load(f)
+        imei_eye_mac.clear()
+        imei_eye_mac.update(data)
+    except FileNotFoundError:
+        pass
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"[-] Failed to load {IMEI_EYE_MAC_FILE}: {e}")
+
+async def reload_imei_eye_mac_periodically():
+    last_mtime = None
+    while True:
+        try:
+            mtime = os.stat(IMEI_EYE_MAC_FILE).st_mtime
+        except FileNotFoundError:
+            mtime = None
+        if mtime != last_mtime:
+            load_imei_eye_mac()
+            last_mtime = mtime
+        await asyncio.sleep(IMEI_EYE_MAC_RELOAD_SECONDS)
 
 # Teltonika IO ID lookup table (English parameter names).
 #
@@ -18,7 +52,7 @@ IO_NAMES = {
     # System & Power
     21: "gsm_signal_level",        # 0-5 bars
     22: "device_battery_voltage_v",# mV -> V
-    24: "speed",
+    24: "speed_avl_kmh",           # AVL speed element - may duplicate or differ from GPS-derived speed depending on the device's configured speed source
     66: "external_voltage_v",      # mV -> V
     67: "battery_voltage_v",       # mV -> V
     68: "battery_current_ma",
@@ -64,6 +98,16 @@ IO_NAMES = {
     385: "ble_beacon_raw_hex"
 }
 
+# IO IDs that carry EYE sensor data rather than FMC650 device data. Used to
+# split each record into two separate MQTT messages (see handle_teltonika).
+EYE_IO_IDS = {
+    25, 26, 27, 28, 86, 87,
+    29, 30, 31, 32,
+    701, 705, 709, 713, 729, 730,
+    10822, 10823, 10824, 10825, 10826, 10827, 10828, 10829,
+    385,
+}
+
 try:
     mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 except AttributeError:
@@ -72,9 +116,37 @@ except AttributeError:
 mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
 mqtt_client.loop_start()
 
+def parse_eye_beacon_mac(raw_hex):
+    """Extracts the EYE sensor's Bluetooth MAC address from a Universal BLE
+    Beacon element (AVL ID 385: data-part byte, flags byte, beacon ID,
+    optional signal strength/battery/temperature - per Teltonika's Beacon
+    Packet structure). Assumes the device's Advanced Beacon Capturing is
+    configured to detect this beacon by MAC address, in which case the
+    beacon ID field is the raw 6-byte MAC instead of an iBeacon/Eddystone
+    UUID. Returns None if the payload doesn't match that shape."""
+    try:
+        data = bytes.fromhex(raw_hex)
+    except ValueError:
+        return None
+    if len(data) < 2:
+        return None
+
+    flags = data[1]
+    optional_bytes = (
+        (1 if flags & 0x01 else 0)  # signal strength
+        + (2 if flags & 0x02 else 0)  # battery voltage
+        + (2 if flags & 0x04 else 0)  # temperature
+    )
+    beacon_id = data[2:len(data) - optional_bytes]
+    if len(beacon_id) != 6:
+        return None
+    return beacon_id.hex(':').upper()
+
 def translate_io_values(io_data):
-    """Translates raw IO IDs into human-readable, named values."""
-    translated = {}
+    """Translates raw IO IDs into named values, split into FMC650 device
+    values and EYE sensor values (see EYE_IO_IDS)."""
+    fmc_values = {}
+    eye_values = {}
     for io_id, raw_val in io_data.items():
         name = IO_NAMES.get(io_id, f"io_{io_id}")
 
@@ -100,8 +172,12 @@ def translate_io_values(io_data):
         else:
             val = raw_val
 
-        translated[name] = val
-    return translated
+        if io_id in EYE_IO_IDS:
+            eye_values[name] = val
+        else:
+            fmc_values[name] = val
+
+    return fmc_values, eye_values
 
 def parse_codec8(data):
     codec_id = data[0]
@@ -157,6 +233,10 @@ def parse_codec8(data):
                     io_data[io_id] = data[offset:offset + vlen].hex()
                     offset += vlen
 
+        fmc_values, eye_values = translate_io_values(io_data)
+        fmc_raw_io = {k: v for k, v in io_data.items() if k not in EYE_IO_IDS}
+        eye_raw_io = {k: v for k, v in io_data.items() if k in EYE_IO_IDS}
+
         records.append({
             "timestamp": ts_ms,
             "datetime": dt_iso,
@@ -167,8 +247,10 @@ def parse_codec8(data):
             "angle": angle,
             "satellites": sats,
             "speed": speed,
-            "values": translate_io_values(io_data),
-            "raw_io": io_data
+            "values": fmc_values,
+            "raw_io": fmc_raw_io,
+            "eye_values": eye_values,
+            "eye_raw_io": eye_raw_io
         })
 
     return num_records, records
@@ -198,13 +280,53 @@ async def handle_teltonika(reader, writer):
             writer.write(struct.pack(">I", num_records))
             await writer.drain()
 
-            topic = f"teltonika/{imei}/data"
+            fmc_topic = f"teltonika/{imei}/data"
+            eye_topic = f"teltonika/{imei}/eye"
             for rec in records:
-                payload_json = json.dumps(rec)
-                mqtt_client.publish(topic, payload_json)
-                v = rec["values"]
-                eye_temp = v.get('eye_temperature_c', v.get('eye_1_temperature', 'N/A'))
-                print(f"[>] {topic} | Ign: {v.get('ignition')} | Volt: {v.get('external_voltage_v')}V | EYE Temp: {eye_temp}")
+                fmc_values = rec.pop("values")
+                fmc_raw_io = rec.pop("raw_io")
+                eye_values = rec.pop("eye_values")
+                eye_raw_io = rec.pop("eye_raw_io")
+
+                # Flat payload (no nested objects) so each key maps directly
+                # to a TimescaleDB column/field.
+                fmc_rec = {
+                    "timestamp": rec["timestamp"],
+                    "datetime": rec["datetime"],
+                    "imei": imei,
+                    "priority": rec["priority"],
+                    "latitude": rec["latitude"],
+                    "longitude": rec["longitude"],
+                    "altitude": rec["altitude"],
+                    "angle": rec["angle"],
+                    "satellites": rec["satellites"],
+                    "speed": rec["speed"],
+                    **fmc_values
+                }
+                mqtt_client.publish(fmc_topic, json.dumps(fmc_rec))
+                mqtt_client.publish(f"{fmc_topic}/raw", json.dumps(fmc_raw_io))
+                print(f"[>] {fmc_topic} | Ign: {fmc_values.get('ignition')} | Volt: {fmc_values.get('external_voltage_v')}V")
+
+                if eye_values or eye_raw_io:
+                    if 385 in eye_raw_io:
+                        mac = parse_eye_beacon_mac(eye_raw_io[385])
+                    else:
+                        mac = imei_eye_mac.get(imei)
+                    eye_rec = {
+                        "timestamp": rec["timestamp"],
+                        "datetime": rec["datetime"],
+                        "imei": imei,
+                        "mac": mac,
+                        "latitude": rec["latitude"],
+                        "longitude": rec["longitude"],
+                        "altitude": rec["altitude"],
+                        "angle": rec["angle"],
+                        "speed": rec["speed"],
+                        **eye_values
+                    }
+                    mqtt_client.publish(eye_topic, json.dumps(eye_rec))
+                    mqtt_client.publish(f"{eye_topic}/raw", json.dumps(eye_raw_io))
+                    print(f"[>] {eye_topic} | IMEI: {imei} | EYE Temp: {eye_values.get('eye_temperature_c', eye_values.get('eye_1_temperature', 'N/A'))}")
 
     except (asyncio.IncompleteReadError, ConnectionResetError):
         pass
@@ -215,6 +337,9 @@ async def handle_teltonika(reader, writer):
         await writer.wait_closed()
 
 async def main():
+    load_imei_eye_mac()
+    asyncio.create_task(reload_imei_eye_mac_periodically())
+
     server = await asyncio.start_server(handle_teltonika, "0.0.0.0", TCP_PORT)
     print(f"[*] Teltonika TCP -> MQTT gateway listening on port {TCP_PORT}...")
     async with server:
