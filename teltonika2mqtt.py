@@ -9,15 +9,41 @@ MQTT_BROKER = "127.0.0.1"
 MQTT_PORT = 1883
 TCP_PORT = 5027
 
+# FMC650 Bluetooth 4.0 supports up to 4 paired sensor slots.
+MAX_EYE_SLOTS = 4
+EYE_SLOTS = range(1, MAX_EYE_SLOTS + 1)
+
 # Which EYE sensor (BLE MAC) is currently attached to which tractor (FMC650
-# IMEI). This pairing isn't sent over the AVL data stream - the EYE sensor
-# lives on the implement/attachment and gets moved between tractors, so it's
-# tracked here instead of hardcoded. Edit IMEI_EYE_MAC_FILE to reflect a swap;
-# it is reloaded automatically (see reload_imei_eye_mac_periodically) without
-# needing to restart the service.
+# IMEI), per Bluetooth 4.0 sensor slot (1-4). This pairing isn't sent over
+# the AVL data stream - the EYE sensor lives on the implement/attachment and
+# gets moved between tractors, so it's tracked here instead of hardcoded. A
+# value can be either a plain MAC string (legacy - applies to slot 1 only)
+# or an object keyed by slot:
+#   {"<imei>": {"1": "AA:BB:CC:DD:EE:FF", "2": "11:22:33:44:55:66"}}
+# Edit IMEI_EYE_MAC_FILE to reflect a swap; it is reloaded automatically (see
+# reload_imei_eye_mac_periodically) without needing to restart the service.
 IMEI_EYE_MAC_FILE = "imei_eye_mac.json"
 IMEI_EYE_MAC_RELOAD_SECONDS = 30
 imei_eye_mac = {}
+
+# Beacon capturing (AVL 548/385, which carries the live MAC) and the paired
+# BLE sensor readings (AVL 701-730) are two independent FMC650 subsystems -
+# they rarely land in the same AVL record, and with two sensors paired, a
+# single 548 element can report both of their MACs at once with no direct
+# link to which slot's readings they belong to. This remembers the last live
+# MAC matched to each (imei, slot), so records with only sensor readings
+# still get tagged with the right slot's MAC instead of falling straight
+# through to the static imei_eye_mac.json, and so a freshly detected MAC can
+# be matched back to the slot it belongs to (see resolve_slot_macs). Keyed
+# by (imei, slot).
+last_seen_eye_mac = {}
+
+# Same idea for the individual EYE sensor readings (temperature, humidity,
+# magnet, ...) of each slot: since they arrive piecemeal across separate AVL
+# records, this remembers the latest known value of each field per (imei,
+# slot), so every eye1/eye2 message published is a complete snapshot rather
+# than whatever subset of fields happened to be in that one record.
+last_seen_eye_values = {}
 
 def load_imei_eye_mac():
     try:
@@ -42,12 +68,44 @@ async def reload_imei_eye_mac_periodically():
             last_mtime = mtime
         await asyncio.sleep(IMEI_EYE_MAC_RELOAD_SECONDS)
 
-# Teltonika IO ID lookup table (English parameter names).
+# Which AVL IDs carry each Bluetooth 4.0 sensor SLOT's EYE readings, and
+# under what field name. Confirmed by field-testing across 3 paired sensors:
+# temperature/battery/humidity/magnet each follow "base ID + (slot - 1)"
+# (e.g. temperature is 701/702/703/704 for slots 1-4) - not documented
+# anywhere we could find. Slot 4's fields (704/708/712/716) are extrapolated
+# from that confirmed pattern but not yet directly observed. Fields here get
+# a slot-specific MAC attached (see resolve_slot_macs) and are published to
+# separate teltonika/<imei>/eye<slot> topics - never mixed into one message,
+# since they are distinct physical sensors.
 #
-# Note: on this device, AVL IDs 701, 705, 709, 713, 729 and 730 carry EYE
-# sensor readings (confirmed against the field-tested server.py mapping),
-# not the standard CAN / FMS / Tachograph fields those IDs are documented
-# for on other Teltonika models. Mapped accordingly below.
+# Movement/magnet counters (729/730 for slot 1; the 731-740 range for the
+# others, which doesn't follow the simple per-slot offset the other fields
+# do) are deliberately not mapped/published - not needed, still visible in
+# the raw IO dump if that changes.
+EYE_SLOT_FIELDS = {
+    701: (1, "eye_temperature_c"),        # x100 C
+    705: (1, "eye_battery_percent"),      # %
+    709: (1, "eye_humidity_percent"),     # %
+    713: (1, "eye_magnet_closed"),        # bool, bit 3
+
+    702: (2, "eye_temperature_c"),        # x100 C
+    706: (2, "eye_battery_percent"),      # %
+    710: (2, "eye_humidity_percent"),     # %
+    714: (2, "eye_magnet_closed"),        # bool, bit 3
+
+    703: (3, "eye_temperature_c"),        # x100 C
+    707: (3, "eye_battery_percent"),      # %
+    711: (3, "eye_humidity_percent"),     # %
+    715: (3, "eye_magnet_closed"),        # bool, bit 3
+
+    704: (4, "eye_temperature_c"),        # x100 C, extrapolated - unconfirmed
+    708: (4, "eye_battery_percent"),      # %, extrapolated - unconfirmed
+    712: (4, "eye_humidity_percent"),     # %, extrapolated - unconfirmed
+    716: (4, "eye_magnet_closed"),        # bool, bit 3, extrapolated - unconfirmed
+}
+
+# Teltonika IO ID lookup table (English parameter names), for everything
+# that ISN'T one of the per-slot EYE fields above.
 IO_NAMES = {
     # System & Power
     21: "gsm_signal_level",        # 0-5 bars
@@ -63,14 +121,6 @@ IO_NAMES = {
     239: "ignition",               # bool
     240: "movement",               # bool
     241: "gsm_operator_code",
-
-    # Teltonika EYE Sensor (relayed via AVL IDs 701-730 on this device)
-    701: "eye_temperature_c",      # x100 C
-    705: "eye_battery_percent",    # %
-    709: "eye_humidity_percent",   # %
-    713: "eye_magnet_closed",      # bool, bit 3 active-low
-    729: "eye_magnet_movement_count",
-    730: "eye_movement_count",
 
     # Teltonika EYE Sensor / BLE Sensor 1
     25: "eye_1_temperature",        # x10 C
@@ -95,17 +145,19 @@ IO_NAMES = {
     32: "eye_2_magnet",
 
     # Raw Beacon data
-    385: "ble_beacon_raw_hex"
+    385: "ble_beacon_raw_hex",       # Simple beacon mode
+    548: "ble_advanced_beacon_raw_hex"  # Advanced beacon mode (Beacon Capturing Configuration)
 }
 
-# IO IDs that carry EYE sensor data rather than FMC650 device data. Used to
-# split each record into two separate MQTT messages (see handle_teltonika).
-EYE_IO_IDS = {
+# IO IDs that carry EYE sensor data rather than FMC650 device data - includes
+# both slot fields (EYE_SLOT_FIELDS) and unidentified/legacy ones. Used to
+# split each record's raw IO into fmc_raw_io vs eye_raw_io (see handle_teltonika).
+EYE_IO_IDS = set(EYE_SLOT_FIELDS) | {
     25, 26, 27, 28, 86, 87,
     29, 30, 31, 32,
-    701, 705, 709, 713, 729, 730,
+    729, 730, 731, 732, 733, 734, 735, 736, 737, 738, 739, 740,  # movement/magnet counters, not published as named fields
     10822, 10823, 10824, 10825, 10826, 10827, 10828, 10829,
-    385,
+    385, 548,
 }
 
 try:
@@ -142,14 +194,94 @@ def parse_eye_beacon_mac(raw_hex):
         return None
     return beacon_id.hex(':').upper()
 
-def translate_io_values(io_data):
-    """Translates raw IO IDs into named values, split into FMC650 device
-    values and EYE sensor values (see EYE_IO_IDS)."""
-    fmc_values = {}
-    eye_values = {}
-    for io_id, raw_val in io_data.items():
-        name = IO_NAMES.get(io_id, f"io_{io_id}")
+def parse_advanced_beacon_macs(raw_hex):
+    """Extracts every MAC address found in an AVL ID 548 (Advanced Beacon
+    Capturing) element: a 1-byte data-part header (current/total parts, as
+    in AVL 385), followed by one or more beacon entries, each a 1-byte entry
+    length and then TLV parameters (0x00 RSSI: 1-byte value, 0x01 Beacon ID:
+    variable-length value, 0x02 Additional Data: variable-length value).
+    With two EYE sensors paired, a single element can report both of their
+    MACs at once (one entry per detected beacon) - returns a list of every
+    Beacon ID that is exactly 6 bytes long (i.e. captured with 'Beacon ID
+    source: MAC address'), in the order they appear. Doesn't say which
+    physical sensor slot each MAC belongs to - see resolve_slot_macs."""
+    try:
+        data = bytes.fromhex(raw_hex)
+    except ValueError:
+        return []
+    if len(data) < 1:
+        return []
 
+    macs = []
+    offset = 1  # skip the leading data-part header byte
+    while offset < len(data):
+        entry_len = data[offset]
+        offset += 1
+        entry_end = offset + entry_len
+        if entry_end > len(data):
+            break
+
+        pos = offset
+        while pos + 2 <= entry_end:
+            param_id = data[pos]
+            param_len = data[pos + 1]
+            pos += 2
+            value = data[pos:pos + param_len]
+            pos += param_len
+            if param_id == 0x01 and len(value) == 6:
+                macs.append(value.hex(':').upper())
+
+        offset = entry_end
+    return macs
+
+def resolve_slot_macs(imei, eye_raw_io):
+    """Attributes each MAC detected live via 548/385 to the sensor slot (see
+    EYE_SLOTS) it belongs to, since neither element says so directly.
+    Matches a detected MAC against the slot's last-known MAC (seeded from
+    the static imei_eye_mac.json); if exactly one slot has no known MAC yet
+    and exactly one detected MAC is left unmatched, bootstraps that slot
+    with it (only safe to guess when there's no ambiguity). Returns
+    {slot: mac_or_None} for every slot in EYE_SLOTS."""
+    if 548 in eye_raw_io:
+        detected = parse_advanced_beacon_macs(eye_raw_io[548])
+    elif 385 in eye_raw_io:
+        mac = parse_eye_beacon_mac(eye_raw_io[385])
+        detected = [mac] if mac else []
+    else:
+        detected = []
+
+    static = imei_eye_mac.get(imei, {})
+    if isinstance(static, str):
+        static = {"1": static}  # legacy config shape: applies to slot 1 only
+
+    unmatched = list(detected)
+    result = {}
+    for slot in EYE_SLOTS:
+        known = last_seen_eye_mac.get((imei, slot)) or static.get(str(slot))
+        match = known if known in unmatched else None
+        if match:
+            unmatched.remove(match)
+            last_seen_eye_mac[(imei, slot)] = match
+        result[slot] = match or known
+
+    unknown_slots = [s for s in EYE_SLOTS if result[s] is None]
+    if len(unknown_slots) == 1 and len(unmatched) == 1:
+        slot = unknown_slots[0]
+        last_seen_eye_mac[(imei, slot)] = unmatched[0]
+        result[slot] = unmatched[0]
+
+    return result
+
+def translate_io_values(io_data):
+    """Translates raw IO IDs into named values. Per-slot EYE fields
+    (EYE_SLOT_FIELDS) go into eye_slot_values[<slot>], one dict per physical
+    sensor - never mixed together. Anything else in EYE_IO_IDS (unidentified
+    IDs, older/legacy EYE IDs, raw beacon hex) is skipped here - it stays
+    visible only in the raw IO dump, since we can't confidently name or
+    attribute it. Everything else is an FMC650 device value."""
+    fmc_values = {}
+    eye_slot_values = {slot: {} for slot in EYE_SLOTS}
+    for io_id, raw_val in io_data.items():
         # Convert raw values into their logical units
         if io_id in (66, 67, 22, 26, 30, 10828):
             # Millivolts to volts (e.g. 11586 mV -> 11.586 V)
@@ -160,24 +292,28 @@ def translate_io_values(io_data):
         elif io_id in (25, 29):
             # EYE sensor temperature (often scaled by 10 or 100)
             val = raw_val / 10.0 if abs(raw_val) > 200 else raw_val
-        elif io_id in (701, 10826):
+        elif io_id in (701, 702, 703, 704, 10826):
             # EYE temperature (0.01 C step)
             val = round(raw_val / 100.0, 2)
         elif io_id == 10827:
             # Codec 8 Extended EYE humidity (0.01 % step)
             val = round(raw_val / 100.0, 2)
-        elif io_id == 713:
+        elif io_id in (713, 714, 715, 716):
             # EYE magnet state, bit 3 (1 = magnet near/closed)
             val = (raw_val & 0x08) != 0
         else:
             val = raw_val
 
-        if io_id in EYE_IO_IDS:
-            eye_values[name] = val
+        if io_id in EYE_SLOT_FIELDS:
+            slot, field_name = EYE_SLOT_FIELDS[io_id]
+            eye_slot_values[slot][field_name] = val
+        elif io_id in EYE_IO_IDS:
+            continue
         else:
+            name = IO_NAMES.get(io_id, f"io_{io_id}")
             fmc_values[name] = val
 
-    return fmc_values, eye_values
+    return fmc_values, eye_slot_values
 
 def parse_codec8(data):
     codec_id = data[0]
@@ -233,13 +369,14 @@ def parse_codec8(data):
                     io_data[io_id] = data[offset:offset + vlen].hex()
                     offset += vlen
 
-        fmc_values, eye_values = translate_io_values(io_data)
+        fmc_values, eye_slot_values = translate_io_values(io_data)
         fmc_raw_io = {k: v for k, v in io_data.items() if k not in EYE_IO_IDS}
         eye_raw_io = {k: v for k, v in io_data.items() if k in EYE_IO_IDS}
 
         records.append({
             "timestamp": ts_ms,
             "datetime": dt_iso,
+            "codec": hex(codec_id),
             "priority": priority,
             "latitude": lat / 10000000.0,
             "longitude": lon / 10000000.0,
@@ -249,7 +386,7 @@ def parse_codec8(data):
             "speed": speed,
             "values": fmc_values,
             "raw_io": fmc_raw_io,
-            "eye_values": eye_values,
+            "eye_slot_values": eye_slot_values,
             "eye_raw_io": eye_raw_io
         })
 
@@ -281,11 +418,10 @@ async def handle_teltonika(reader, writer):
             await writer.drain()
 
             fmc_topic = f"teltonika/{imei}/data"
-            eye_topic = f"teltonika/{imei}/eye"
             for rec in records:
                 fmc_values = rec.pop("values")
                 fmc_raw_io = rec.pop("raw_io")
-                eye_values = rec.pop("eye_values")
+                eye_slot_values = rec.pop("eye_slot_values")
                 eye_raw_io = rec.pop("eye_raw_io")
 
                 # Flat payload (no nested objects) so each key maps directly
@@ -293,7 +429,7 @@ async def handle_teltonika(reader, writer):
                 fmc_rec = {
                     "timestamp": rec["timestamp"],
                     "datetime": rec["datetime"],
-                    "imei": imei,
+                    "codec": rec["codec"],
                     "priority": rec["priority"],
                     "latitude": rec["latitude"],
                     "longitude": rec["longitude"],
@@ -307,26 +443,27 @@ async def handle_teltonika(reader, writer):
                 mqtt_client.publish(f"{fmc_topic}/raw", json.dumps(fmc_raw_io))
                 print(f"[>] {fmc_topic} | Ign: {fmc_values.get('ignition')} | Volt: {fmc_values.get('external_voltage_v')}V")
 
-                if eye_values or eye_raw_io:
-                    if 385 in eye_raw_io:
-                        mac = parse_eye_beacon_mac(eye_raw_io[385])
-                    else:
-                        mac = imei_eye_mac.get(imei)
-                    eye_rec = {
-                        "timestamp": rec["timestamp"],
-                        "datetime": rec["datetime"],
-                        "imei": imei,
-                        "mac": mac,
-                        "latitude": rec["latitude"],
-                        "longitude": rec["longitude"],
-                        "altitude": rec["altitude"],
-                        "angle": rec["angle"],
-                        "speed": rec["speed"],
-                        **eye_values
-                    }
-                    mqtt_client.publish(eye_topic, json.dumps(eye_rec))
-                    mqtt_client.publish(f"{eye_topic}/raw", json.dumps(eye_raw_io))
-                    print(f"[>] {eye_topic} | IMEI: {imei} | EYE Temp: {eye_values.get('eye_temperature_c', eye_values.get('eye_1_temperature', 'N/A'))}")
+                if eye_raw_io:
+                    slot_macs = resolve_slot_macs(imei, eye_raw_io)
+
+                    for slot in EYE_SLOTS:
+                        merged = last_seen_eye_values.setdefault((imei, slot), {})
+                        merged.update(eye_slot_values[slot])
+
+                        if not merged and slot_macs[slot] is None:
+                            continue  # nothing at all known for this slot yet
+
+                        eye_rec = {
+                            "timestamp": rec["timestamp"],
+                            "datetime": rec["datetime"],
+                            "mac": slot_macs[slot],
+                            **merged
+                        }
+                        eye_topic = f"teltonika/{imei}/eye{slot}"
+                        mqtt_client.publish(eye_topic, json.dumps(eye_rec))
+                        print(f"[>] {eye_topic} | MAC: {slot_macs[slot]} | Temp: {merged.get('eye_temperature_c', 'N/A')}")
+
+                    mqtt_client.publish(f"teltonika/{imei}/eye/raw", json.dumps(eye_raw_io))
 
     except (asyncio.IncompleteReadError, ConnectionResetError):
         pass

@@ -13,10 +13,17 @@ tracker devices and publishes decoded records to an MQTT broker.
   temperature/humidity/magnet state)
 - Publishes FMC650 device data (GPS, voltage, ignition, etc.) as a flat JSON
   object (one key per field, no nesting - ready for a TimescaleDB/Node-RED
-  style bridge) to `teltonika/<imei>/data`, and EYE sensor data the same way
-  to `teltonika/<imei>/eye` (includes `imei` and `mac`, see below). The raw,
-  untranslated IO map for each record is published separately to
-  `teltonika/<imei>/data/raw` and `teltonika/<imei>/eye/raw` for debugging.
+  style bridge) to `teltonika/<imei>/data`. Up to two EYE sensors can be
+  paired at once (Bluetooth 4.0 slot 1/2); each is published as its own flat
+  JSON object (temperature, humidity, magnet state, `mac`, see below) to its
+  own topic, `teltonika/<imei>/eye1` and `teltonika/<imei>/eye2` - never
+  mixed into one message, since they're two distinct physical sensors.
+  Neither payload repeats the IMEI or GPS position - the IMEI is already the
+  `device` tag derived from the topic itself, and the eye topics share the
+  same timestamp as the `/data` record they came from, so position can be
+  joined in by `time` + `device` if needed. The raw, untranslated IO map for
+  each record is published separately to `teltonika/<imei>/data/raw` and
+  `teltonika/<imei>/eye/raw` (shared by both sensor slots) for debugging.
 
 ## Requirements
 
@@ -75,25 +82,42 @@ sudo systemctl daemon-reload && sudo systemctl restart teltonika2mqtt.service   
 
 ## Tracking which EYE sensor (attachment) is on which tractor
 
-The EYE sensor lives on an implement/attachment, not the tractor itself, so
-it gets moved between tractors (FMC650 devices) over time. Its BLE MAC
-address isn't sent over the AVL data stream, so it can't be read from the
-data automatically — it's tracked in [imei_eye_mac.json](imei_eye_mac.json)
-instead, mapping each tractor's IMEI to the MAC of the attachment currently
-hitched to it:
+Each EYE sensor lives on an implement/attachment, not the tractor itself, so
+it gets moved between tractors (FMC650 devices) over time - and a given
+tractor's slot 1 and slot 2 sensors are two different physical attachments.
+Each `teltonika/<imei>/eye1` / `eye2` message includes `mac`, the attachment
+currently identified in that slot, so usage duration per attachment can be
+computed downstream by grouping messages by `mac`, independent of which
+tractor (or slot) it was on.
+
+Sensor readings (temperature, humidity, magnet state, ...) come from the
+paired Bluetooth 4.0 connection (AVL IDs 701-730), which tells us nothing
+about MAC addresses. The MAC comes from a completely separate subsystem -
+Beacon Capturing (AVL 548, or older/simpler AVL 385) - which passively
+listens for the sensor's Eddystone/iBeacon broadcast and, when configured
+with **Beacon ID source: MAC address**, reports its real MAC. A single 548
+element can report both sensors' MACs at once but doesn't say which
+belongs to which slot, so `resolve_slot_macs()` matches each detected MAC
+against the slot it was last confirmed for (seeded from
+[imei_eye_mac.json](imei_eye_mac.json)), and falls back to that static
+config if nothing live has been seen yet for a slot:
 
 ```json
 {
-  "860848081816598": "AA:BB:CC:DD:EE:FF"
+  "860848081816598": {
+    "1": "7C:D9:F4:12:AA:A6",
+    "2": "7C:D9:F4:12:AA:C9"
+  }
 }
 ```
 
-When you move an attachment to a different tractor, update this file. It is
-reloaded automatically (checked every 30s) — no restart needed. Each
-`teltonika/<imei>/eye` MQTT message includes both `imei` (the tractor) and
-`mac` (the attachment) at the time it was sent, so usage duration per
-attachment can be computed downstream by grouping messages by `mac`,
-independent of which tractor it was on.
+(A plain string instead of a `{"1": ..., "2": ...}` object is also accepted,
+for backward compatibility - it's treated as slot 1's MAC.)
+
+Update this file when you move an attachment to a different tractor/slot.
+It's reloaded automatically (checked every 30s) — no restart needed. Once a
+slot's MAC has been confirmed live via beacon capturing, that takes priority
+over the file until the gateway restarts.
 
 ## Wiring up to TimescaleDB (Node-RED)
 
@@ -103,17 +127,19 @@ one MQTT message per AVL record, so they can be piped straight into
 
 That node derives the `measurement` name from the MQTT topic using a mapping
 string, one segment per topic level. Our topics only have 3 levels
-(`teltonika` / `<imei>` / `data` or `eye`), so configure the node's topic
-mapping as:
+(`teltonika` / `<imei>` / `data`, `eye1` or `eye2`), so configure the node's
+topic mapping as:
 
 ```
 -/device/measurement
 ```
 
 `-` skips the `teltonika` prefix, `device` becomes the IMEI (tractor), and
-`measurement` becomes `data` or `eye`. With a JSON object payload the node
-takes each remaining top-level key as a field automatically, so no `field`
-position is needed in the mapping.
+`measurement` becomes `data`, `eye1` or `eye2`. With a JSON object payload
+the node takes each remaining top-level key as a field automatically, so no
+`field` position is needed in the mapping. Subscribe the MQTT-in node to
+`teltonika/+/+` (not `teltonika/#`) so it picks up exactly these 3-level
+topics and skips the `.../data/raw` and `.../eye/raw` debug topics.
 
 If you see `Measurement is required (from topic mapping)`, the configured
 mapping string doesn't have a `measurement` position lining up with our
@@ -121,11 +147,13 @@ topic's segment count — recheck it against the mapping above.
 
 ## IO mapping notes
 
-`IO_NAMES` in [teltonika2mqtt.py](teltonika2mqtt.py) maps Teltonika AVL IDs to readable
-parameter names. On this device model, AVL IDs 701, 705, 709, 713, 729 and
-730 carry EYE sensor readings (temperature, battery, humidity, magnet state,
-counters) rather than the CAN/FMS/Tachograph fields those IDs are used for
-on other models — adjust the mapping if you connect a different device type.
+`EYE_SLOT_FIELDS` in [teltonika2mqtt.py](teltonika2mqtt.py) maps each
+Bluetooth 4.0 sensor slot's AVL IDs to readable field names - slot 1 uses
+701/705/709/713/729/730, slot 2 the same fields +1 (702/710/714/731/732).
+Neither is the standard CAN/FMS/Tachograph meaning those IDs are documented
+for on other Teltonika models; both were reverse-engineered against this
+specific device and firmware. `IO_NAMES` covers everything else. Adjust
+both if you connect a different device type.
 
 ## Development
 Mapping from server to local filesystem for development in code.
