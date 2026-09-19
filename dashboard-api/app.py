@@ -64,7 +64,7 @@ SELECT
   MAX(CASE WHEN field='gnss_pdop' THEN value_bigint END) AS pdop,
   MAX(CASE WHEN field='gsm_signal_level' THEN value_bigint END) AS gsm
 FROM measurements
-WHERE measurement='data' AND time >= %s AND time < %s
+WHERE measurement='data' AND device=%s AND time >= %s AND time < %s
 GROUP BY time ORDER BY time
 """
 
@@ -77,16 +77,23 @@ SELECT
   BOOL_OR(CASE WHEN field='eye_magnet_closed' THEN value_bool END) AS magnet_closed,
   MAX(CASE WHEN field='mac' THEN value_text END) AS mac
 FROM measurements
-WHERE measurement IN ('eye1','eye2','eye3') AND time >= %s AND time < %s
+WHERE measurement IN ('eye1','eye2','eye3') AND device=%s AND time >= %s AND time < %s
 GROUP BY time, measurement ORDER BY time, measurement
 """
 
 DATES_SQL = """
 SELECT DISTINCT (time AT TIME ZONE 'Europe/Tallinn')::date AS day
 FROM measurements
-WHERE measurement='data'
+WHERE measurement='data' AND device=%s
 ORDER BY day DESC
 LIMIT 60
+"""
+
+IMEIS_SQL = """
+SELECT DISTINCT device
+FROM measurements
+WHERE measurement='data' AND device IS NOT NULL
+ORDER BY device
 """
 
 
@@ -96,14 +103,14 @@ def fetch_rows(cur, sql, params):
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
-def build_dashboard(date_str):
+def build_dashboard(imei, date_str):
     start_utc, end_utc = day_bounds_utc(date_str)
 
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            data_rows = fetch_rows(cur, DATA_SQL, (start_utc, end_utc))
-            eye_rows = fetch_rows(cur, EYE_SQL, (start_utc, end_utc))
+            data_rows = fetch_rows(cur, DATA_SQL, (imei, start_utc, end_utc))
+            eye_rows = fetch_rows(cur, EYE_SQL, (imei, start_utc, end_utc))
     finally:
         conn.close()
 
@@ -151,6 +158,7 @@ def build_dashboard(date_str):
     gsms = [r["gsm"] for r in data_rows if r["gsm"] is not None]
 
     kpi = {
+        "imei": imei,
         "date": date_str,
         "record_count": len(data_rows),
         "start": data_rows[0]["time"].isoformat(),
@@ -235,12 +243,28 @@ def build_dashboard(date_str):
     return {"kpi": kpi, "series": series, "route": route, "eye": eye_series, "eyeStats": eye_stats}
 
 
-@app.route("/api/dates")
-def api_dates():
+@app.route("/api/imeis")
+def api_imeis():
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(DATES_SQL)
+            cur.execute(IMEIS_SQL)
+            imeis = [row[0] for row in cur.fetchall()]
+    finally:
+        conn.close()
+    return jsonify({"imeis": imeis})
+
+
+@app.route("/api/dates")
+def api_dates():
+    imei = request.args.get("imei")
+    if not imei:
+        return jsonify({"error": "imei is required"}), 400
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(DATES_SQL, (imei,))
             dates = [row[0].isoformat() for row in cur.fetchall()]
     finally:
         conn.close()
@@ -249,6 +273,10 @@ def api_dates():
 
 @app.route("/api/dashboard")
 def api_dashboard():
+    imei = request.args.get("imei")
+    if not imei:
+        return jsonify({"error": "imei is required"}), 400
+
     date_str = request.args.get("date")
     if not date_str:
         date_str = datetime.now(TZ).strftime("%Y-%m-%d")
@@ -258,7 +286,7 @@ def api_dashboard():
     except ValueError:
         return jsonify({"error": "invalid date, expected YYYY-MM-DD"}), 400
 
-    bundle = build_dashboard(date_str)
+    bundle = build_dashboard(imei, date_str)
     if bundle is None:
         return jsonify({"error": "no data for this date"}), 404
     return jsonify(bundle)

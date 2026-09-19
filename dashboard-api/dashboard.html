@@ -111,7 +111,7 @@
     gap: 10px;
     flex-wrap: wrap;
   }
-  #date-picker {
+  #date-picker, #imei-picker {
     font-family: 'IBM Plex Mono', monospace;
     font-size: 13px;
     background: var(--surface-1);
@@ -283,9 +283,10 @@
   <header class="top">
     <div>
       <h1>Traktori telemeetria</h1>
-      <div class="meta">FMC650 · IMEI <span class="mono">860848081816598</span> · 3 EYE-andurit</div>
+      <div class="meta">FMC650 · IMEI <span class="mono" id="imei-label">—</span></div>
     </div>
     <div class="header-right">
+      <select id="imei-picker"></select>
       <select id="date-picker"></select>
       <div class="meta mono" id="date-range">—</div>
     </div>
@@ -678,10 +679,11 @@
     document.getElementById('dashboard-content').hidden = true;
   }
 
-  async function loadDate(dateStr) {
+  async function loadDashboard(imei, dateStr) {
     showStatus('Laadin andmeid…', false);
     try {
-      const res = await fetch('/api/dashboard?date=' + encodeURIComponent(dateStr));
+      const url = '/api/dashboard?imei=' + encodeURIComponent(imei) + '&date=' + encodeURIComponent(dateStr);
+      const res = await fetch(url);
       if (res.status === 404) {
         showStatus('Selle päeva kohta andmeid ei leitud.', false);
         return;
@@ -691,6 +693,7 @@
         return;
       }
       const bundle = await res.json();
+      document.getElementById('imei-label').textContent = imei;
       renderDashboard(bundle);
     } catch (e) {
       console.error('[dashboard] load failed:', e);
@@ -698,25 +701,51 @@
     }
   }
 
+  async function loadDatesForImei(imei, preferredDate) {
+    const datePicker = document.getElementById('date-picker');
+    while (datePicker.firstChild) datePicker.removeChild(datePicker.firstChild);
+
+    const res = await fetch('/api/dates?imei=' + encodeURIComponent(imei));
+    const data = await res.json();
+    const dates = data.dates || [];
+    if (!dates.length) {
+      showStatus('Selle seadme kohta ei leitud veel andmeid.', false);
+      return;
+    }
+    dates.forEach((d) => {
+      const opt = document.createElement('option');
+      opt.value = d;
+      opt.textContent = new Date(d + 'T00:00:00').toLocaleDateString('et-EE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+      datePicker.appendChild(opt);
+    });
+    const chosen = (preferredDate && dates.includes(preferredDate)) ? preferredDate : dates[0];
+    datePicker.value = chosen;
+    await loadDashboard(imei, chosen);
+  }
+
   async function init() {
-    const picker = document.getElementById('date-picker');
+    const imeiPicker = document.getElementById('imei-picker');
+    const datePicker = document.getElementById('date-picker');
     try {
-      const res = await fetch('/api/dates');
+      const res = await fetch('/api/imeis');
       const data = await res.json();
-      const dates = data.dates || [];
-      if (!dates.length) {
-        showStatus('Andmebaasis pole veel ühtegi päeva andmeid.', false);
+      const imeis = data.imeis || [];
+      if (!imeis.length) {
+        showStatus('Andmebaasis pole veel ühtegi seadme andmeid.', false);
         return;
       }
-      dates.forEach((d) => {
+      imeis.forEach((imei) => {
         const opt = document.createElement('option');
-        opt.value = d;
-        opt.textContent = new Date(d + 'T00:00:00').toLocaleDateString('et-EE', { day: '2-digit', month: '2-digit', year: 'numeric' });
-        picker.appendChild(opt);
+        opt.value = imei;
+        opt.textContent = imei;
+        imeiPicker.appendChild(opt);
       });
-      picker.value = dates[0];
-      picker.addEventListener('change', () => loadDate(picker.value));
-      await loadDate(dates[0]);
+      imeiPicker.value = imeis[0];
+
+      imeiPicker.addEventListener('change', () => loadDatesForImei(imeiPicker.value));
+      datePicker.addEventListener('change', () => loadDashboard(imeiPicker.value, datePicker.value));
+
+      await loadDatesForImei(imeis[0]);
     } catch (e) {
       console.error('[dashboard] init failed:', e);
       showStatus('Ei saanud ühendust API-ga.', true);
