@@ -6,6 +6,9 @@ lib64
 pyvenv.cfg
 share/
 
+# Python venvs created inside subprojects (e.g. dashboard-api/venv)
+venv/
+
 # Python bytecode / caches
 __pycache__/
 *.py[cod]

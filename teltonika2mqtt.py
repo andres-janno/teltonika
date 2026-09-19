@@ -1,4 +1,5 @@
 import asyncio
+import collections
 import os
 import struct
 import json
@@ -8,6 +9,24 @@ import paho.mqtt.client as mqtt
 MQTT_BROKER = "127.0.0.1"
 MQTT_PORT = 1883
 TCP_PORT = 5027
+
+# Teltonika devices resend an AVL record if they don't get our ACK in time
+# (e.g. our service restarted mid-transmission) - this dedupes those so a
+# retransmitted record doesn't get published/stored twice. Keyed by IMEI, an
+# LRU of recently published record timestamps; bounded so it can't grow
+# unbounded over a long-running process.
+RECENT_TIMESTAMPS_PER_IMEI = 100
+recent_timestamps = {}
+
+def is_duplicate_record(imei, ts_ms):
+    seen = recent_timestamps.setdefault(imei, collections.OrderedDict())
+    if ts_ms in seen:
+        seen.move_to_end(ts_ms)
+        return True
+    seen[ts_ms] = None
+    if len(seen) > RECENT_TIMESTAMPS_PER_IMEI:
+        seen.popitem(last=False)
+    return False
 
 # FMC650 Bluetooth 4.0 supports up to 4 paired sensor slots.
 MAX_EYE_SLOTS = 4
@@ -104,16 +123,20 @@ EYE_SLOT_FIELDS = {
     716: (4, "eye_magnet_closed"),        # bool, bit 3, extrapolated - unconfirmed
 }
 
+# IO IDs deliberately not published at all: internal backup battery
+# voltage/current (67/68, disabled - not needed) and BLE 3 Battery (22,
+# official AVL ID meaning, unrelated to our EYE sensors - removed).
+DISABLED_IO_IDS = {22, 67, 68}
+
 # Teltonika IO ID lookup table (English parameter names), for everything
 # that ISN'T one of the per-slot EYE fields above.
 IO_NAMES = {
     # System & Power
     21: "gsm_signal_level",        # 0-5 bars
-    22: "device_battery_voltage_v",# mV -> V
     24: "speed_avl_kmh",           # AVL speed element - may duplicate or differ from GPS-derived speed depending on the device's configured speed source
     66: "external_voltage_v",      # mV -> V
-    67: "battery_voltage_v",       # mV -> V
-    68: "battery_current_ma",
+    # 67: "battery_voltage_v",     # mV -> V - internal backup battery, disabled: not needed right now
+    # 68: "battery_current_ma",    # internal backup battery, disabled: not needed right now
     71: "gnss_status",
     181: "gnss_pdop",
     182: "gnss_hdop",
@@ -283,7 +306,9 @@ def translate_io_values(io_data):
     eye_slot_values = {slot: {} for slot in EYE_SLOTS}
     for io_id, raw_val in io_data.items():
         # Convert raw values into their logical units
-        if io_id in (66, 67, 22, 26, 30, 10828):
+        if io_id in DISABLED_IO_IDS:
+            continue
+        elif io_id in (66, 26, 30, 10828):
             # Millivolts to volts (e.g. 11586 mV -> 11.586 V)
             val = round(raw_val / 1000.0, 3)
         elif io_id in (239, 240):
@@ -419,6 +444,9 @@ async def handle_teltonika(reader, writer):
 
             fmc_topic = f"teltonika/{imei}/data"
             for rec in records:
+                if is_duplicate_record(imei, rec["timestamp"]):
+                    continue
+
                 fmc_values = rec.pop("values")
                 fmc_raw_io = rec.pop("raw_io")
                 eye_slot_values = rec.pop("eye_slot_values")
@@ -429,8 +457,8 @@ async def handle_teltonika(reader, writer):
                 fmc_rec = {
                     "timestamp": rec["timestamp"],
                     "datetime": rec["datetime"],
-                    "codec": rec["codec"],
-                    "priority": rec["priority"],
+                    # "codec": rec["codec"],  # disabled - keeping the payload as small as possible
+                    # "priority": rec["priority"],  # disabled - keeping the payload as small as possible
                     "latitude": rec["latitude"],
                     "longitude": rec["longitude"],
                     "altitude": rec["altitude"],

@@ -1,0 +1,722 @@
+<title>Traktori Telemeetria</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: light;
+    --surface-0: #f4f3ee;
+    --surface-1: #ffffff;
+    --surface-2: #ebe9e2;
+    --border: #ddd9cf;
+    --text-primary: #1b1a17;
+    --text-secondary: #5d5a51;
+    --text-muted: #8a8678;
+    --accent: #2a78d6;
+    --accent-ink: #ffffff;
+    --slot-1: #2a78d6;
+    --slot-2: #eb6834;
+    --slot-3: #1baf7a;
+    --status-warning: #fab219;
+    --status-good: #0ca30c;
+    --status-critical: #d03b3b;
+    --grid-line: #e3e0d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface-0: #161614;
+      --surface-1: #1f1f1c;
+      --surface-2: #26261f;
+      --border: #38372f;
+      --text-primary: #f3f1ea;
+      --text-secondary: #b9b6a9;
+      --text-muted: #837f70;
+      --accent: #3987e5;
+      --accent-ink: #ffffff;
+      --slot-1: #3987e5;
+      --slot-2: #d95926;
+      --slot-3: #199e70;
+      --status-warning: #fab219;
+      --status-good: #0ca30c;
+      --status-critical: #e66767;
+      --grid-line: #33322b;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-0: #161614;
+    --surface-1: #1f1f1c;
+    --surface-2: #26261f;
+    --border: #38372f;
+    --text-primary: #f3f1ea;
+    --text-secondary: #b9b6a9;
+    --text-muted: #837f70;
+    --accent: #3987e5;
+    --accent-ink: #ffffff;
+    --slot-1: #3987e5;
+    --slot-2: #d95926;
+    --slot-3: #199e70;
+    --status-warning: #fab219;
+    --status-good: #0ca30c;
+    --status-critical: #e66767;
+    --grid-line: #33322b;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--surface-0);
+    color: var(--text-primary);
+    font-family: 'IBM Plex Sans', -apple-system, sans-serif;
+  }
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 28px 20px 48px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+  .mono { font-family: 'IBM Plex Mono', 'SF Mono', monospace; font-variant-numeric: tabular-nums; }
+
+  header.top {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 10px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  header.top h1 {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 0;
+  }
+  header.top .meta {
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+  header.top .meta .mono { color: var(--text-primary); }
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  #date-picker {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    background: var(--surface-1);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 8px;
+  }
+
+  .status-msg {
+    text-align: center;
+    color: var(--text-secondary);
+    padding: 40px 20px;
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    font-size: 13px;
+  }
+  .status-msg.err { color: var(--status-critical); }
+
+  .gap-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    background: color-mix(in srgb, var(--status-warning) 14%, var(--surface-1));
+    border: 1px solid color-mix(in srgb, var(--status-warning) 45%, var(--border));
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-size: 13px;
+    color: var(--text-primary);
+  }
+  .gap-banner .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--status-warning);
+    margin-top: 5px;
+    flex-shrink: 0;
+  }
+  .gap-banner strong { font-weight: 600; }
+
+  .kpi-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+    gap: 12px;
+  }
+  .kpi {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .kpi .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+  }
+  .kpi .value {
+    font-size: 24px;
+    font-weight: 600;
+    line-height: 1.15;
+  }
+  .kpi .sub { font-size: 12px; color: var(--text-secondary); }
+
+  .panel {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px 14px;
+  }
+  .panel h2 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0 0 2px;
+  }
+  .panel .panel-sub {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin: 0 0 12px;
+  }
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1.3fr 1fr;
+    gap: 16px;
+  }
+  .grid-2-even {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 760px) {
+    .grid-2, .grid-2-even { grid-template-columns: 1fr; }
+  }
+
+  .chart-box { position: relative; height: 220px; }
+  .chart-box.short { height: 160px; }
+
+  .legend-row {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 8px;
+  }
+  .legend-row .item { display: flex; align-items: center; gap: 6px; }
+  .legend-row .sw { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+
+  #route-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+  .route-wrap { border-radius: 8px; overflow: hidden; background: var(--surface-2); }
+
+  table.eye-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  table.eye-table th {
+    text-align: left;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    font-weight: 600;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  table.eye-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--grid-line);
+  }
+  table.eye-table tr:last-child td { border-bottom: none; }
+  .sensor-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 8px; vertical-align: -1px; }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .pill.closed { background: color-mix(in srgb, var(--status-good) 16%, transparent); color: var(--status-good); }
+  .pill.open { background: color-mix(in srgb, var(--status-warning) 20%, transparent); color: color-mix(in srgb, var(--status-warning) 70%, black); }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .pill.open { color: var(--status-warning); }
+  }
+  :root[data-theme="dark"] .pill.open { color: var(--status-warning); }
+
+  footer.foot {
+    font-size: 12px;
+    color: var(--text-muted);
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1>Traktori telemeetria</h1>
+      <div class="meta">FMC650 · IMEI <span class="mono">860848081816598</span> · 3 EYE-andurit</div>
+    </div>
+    <div class="header-right">
+      <select id="date-picker"></select>
+      <div class="meta mono" id="date-range">—</div>
+    </div>
+  </header>
+
+  <div id="status-msg" class="status-msg">Laadin andmeid…</div>
+
+  <div id="dashboard-content" hidden>
+    <div class="gap-banner" id="gap-banner" hidden style="margin-bottom:20px">
+      <div class="dot"></div>
+      <div id="gap-banner-text"></div>
+    </div>
+
+    <div class="kpi-row" style="margin-bottom:20px">
+      <div class="kpi">
+        <div class="label">Kirjeid</div>
+        <div class="value mono" id="kpi-records">–</div>
+        <div class="sub mono" id="kpi-time-range">–</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Läbitud vahemaa</div>
+        <div class="value mono" id="kpi-distance">–</div>
+        <div class="sub">registreeritud segmentides</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Liikumisaeg</div>
+        <div class="value mono" id="kpi-moving">–</div>
+        <div class="sub" id="kpi-avg-speed">–</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Max kiirus</div>
+        <div class="value mono" id="kpi-max-speed">–</div>
+        <div class="sub" id="kpi-trips">–</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Toitepinge</div>
+        <div class="value mono" id="kpi-voltage">–</div>
+        <div class="sub" id="kpi-voltage-avg">–</div>
+      </div>
+      <div class="kpi">
+        <div class="label">GPS satelliidid</div>
+        <div class="value mono" id="kpi-satellites">–</div>
+        <div class="sub" id="kpi-hdop">–</div>
+      </div>
+    </div>
+
+    <div class="grid-2" style="margin-bottom:20px">
+      <div class="panel">
+        <h2>Marsruut</h2>
+        <p class="panel-sub">GPS-punktid (kaardikihte pole — puhas asukohajoonis).</p>
+        <div class="route-wrap">
+          <svg id="route-svg" viewBox="0 0 640 380" preserveAspectRatio="xMidYMid meet"></svg>
+        </div>
+        <div class="legend-row" id="route-legend"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Kiirus ajas</h2>
+        <p class="panel-sub">km/h, katkestus näitab andmelünka</p>
+        <div class="chart-box"><canvas id="chart-speed"></canvas></div>
+        <h2 style="margin-top:16px">Toitepinge ajas</h2>
+        <p class="panel-sub">V, väline toide</p>
+        <div class="chart-box short"><canvas id="chart-volt"></canvas></div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom:20px">
+      <h2>GPS signaali kvaliteet</h2>
+      <p class="panel-sub">Kaks eraldi skaalat — satelliitide arv ja HDOP (madalam = täpsem) ei sobi kokku ühele teljele</p>
+      <div class="grid-2-even">
+        <div>
+          <div class="panel-sub" style="margin-bottom:4px">Nähtavad satelliidid</div>
+          <div class="chart-box short"><canvas id="chart-sat"></canvas></div>
+        </div>
+        <div>
+          <div class="panel-sub" style="margin-bottom:4px">HDOP</div>
+          <div class="chart-box short"><canvas id="chart-hdop"></canvas></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-2-even" style="margin-bottom:20px">
+      <div class="panel">
+        <h2>EYE anduri temperatuur</h2>
+        <p class="panel-sub">°C, kolm haakeriista andurit</p>
+        <div class="chart-box"><canvas id="chart-temp"></canvas></div>
+      </div>
+      <div class="panel">
+        <h2>EYE anduri niiskus</h2>
+        <p class="panel-sub">%, kolm haakeriista andurit</p>
+        <div class="chart-box"><canvas id="chart-hum"></canvas></div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom:20px">
+      <h2>EYE andurite kokkuvõte</h2>
+      <p class="panel-sub">Valitud päeval mõõdetud vahemikud ja magneti oleku muutused</p>
+      <div style="overflow-x:auto">
+        <table class="eye-table">
+          <thead>
+            <tr>
+              <th>Andur</th><th>MAC</th><th>Temp. vahemik</th><th>Niiskuse vahemik</th><th>Aku</th><th>Magnet muutus</th><th>Praegu</th>
+            </tr>
+          </thead>
+          <tbody id="eye-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <footer class="foot">
+      <span>Allikas: TimescaleDB <span class="mono">measurements</span> tabel (teltonika2mqtt gateway, FMC650) — live</span>
+      <span id="gen-time" class="mono"></span>
+    </footer>
+  </div>
+</div>
+
+<script>
+(function () {
+  const TZ = 'Europe/Tallinn';
+  const css = getComputedStyle(document.documentElement);
+  const cv = (name) => css.getPropertyValue(name).trim();
+  const charts = {};
+
+  function fmtTime(ms) {
+    return new Date(ms).toLocaleTimeString('et-EE', { hour: '2-digit', minute: '2-digit', timeZone: TZ });
+  }
+  function fmtDateTime(iso) {
+    return new Date(iso).toLocaleString('et-EE', {
+      day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: TZ
+    });
+  }
+  function fmtClock(iso) {
+    return new Date(iso).toLocaleTimeString('et-EE', { hour: '2-digit', minute: '2-digit', timeZone: TZ });
+  }
+  function safe(label, fn) {
+    try { fn(); } catch (e) { console.error('[dashboard] ' + label + ' failed:', e); }
+  }
+
+  if (typeof Chart !== 'undefined') {
+    Chart.defaults.font.family = "'IBM Plex Sans', sans-serif";
+    Chart.defaults.color = cv('--text-secondary');
+    Chart.defaults.borderColor = cv('--grid-line');
+  }
+
+  function baseLineOptions(yLabel, extra) {
+    return Object.assign({
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: cv('--surface-1'),
+          titleColor: cv('--text-primary'),
+          bodyColor: cv('--text-secondary'),
+          borderColor: cv('--border'),
+          borderWidth: 1,
+          callbacks: { title: (items) => items.length ? fmtTime(items[0].parsed.x) : '' }
+        }
+      },
+      scales: {
+        x: {
+          type: 'linear',
+          grid: { color: cv('--grid-line') },
+          ticks: { color: cv('--text-muted'), callback: (v) => fmtTime(v), maxRotation: 0, autoSkip: true }
+        },
+        y: {
+          grid: { color: cv('--grid-line') },
+          ticks: { color: cv('--text-muted') },
+          title: yLabel ? { display: true, text: yLabel, color: cv('--text-muted'), font: { size: 11 } } : undefined,
+        }
+      }
+    }, extra || {});
+  }
+
+  function lineDataset(label, points, color) {
+    return {
+      label, data: points, borderColor: color, backgroundColor: color + '26',
+      borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.15,
+      spanGaps: false, fill: false,
+    };
+  }
+
+  function destroyCharts() {
+    Object.values(charts).forEach((c) => { try { c.destroy(); } catch (e) {} });
+  }
+
+  const eyeColors = { eye1: cv('--slot-1'), eye2: cv('--slot-2'), eye3: cv('--slot-3') };
+  const eyeLabels = { eye1: 'Slot 1', eye2: 'Slot 2', eye3: 'Slot 3' };
+
+  function renderCharts(bundle) {
+    if (typeof Chart === 'undefined') return;
+    destroyCharts();
+
+    charts.speed = new Chart(document.getElementById('chart-speed'), {
+      type: 'line',
+      data: { datasets: [lineDataset('Kiirus', bundle.series.spd, cv('--slot-1'))] },
+      options: baseLineOptions('km/h')
+    });
+    charts.volt = new Chart(document.getElementById('chart-volt'), {
+      type: 'line',
+      data: { datasets: [lineDataset('Pinge', bundle.series.volt, cv('--slot-2'))] },
+      options: baseLineOptions('V')
+    });
+    charts.sat = new Chart(document.getElementById('chart-sat'), {
+      type: 'line',
+      data: { datasets: [lineDataset('Satelliidid', bundle.series.sat, cv('--slot-3'))] },
+      options: baseLineOptions('')
+    });
+    charts.hdop = new Chart(document.getElementById('chart-hdop'), {
+      type: 'line',
+      data: { datasets: [lineDataset('HDOP', bundle.series.hdop, cv('--slot-1'))] },
+      options: baseLineOptions('')
+    });
+
+    function eyeChart(key, canvasId, field, yLabel) {
+      const datasets = ['eye1', 'eye2', 'eye3'].map((k) =>
+        lineDataset(eyeLabels[k], bundle.eye[k][field], eyeColors[k])
+      );
+      charts[key] = new Chart(document.getElementById(canvasId), {
+        type: 'line',
+        data: { datasets },
+        options: baseLineOptions(yLabel, {
+          plugins: {
+            legend: {
+              display: true, position: 'bottom',
+              labels: { color: cv('--text-secondary'), boxWidth: 10, boxHeight: 10, usePointStyle: true, padding: 12, font: { size: 11 } }
+            },
+            tooltip: baseLineOptions().plugins.tooltip,
+          }
+        })
+      });
+    }
+    eyeChart('temp', 'chart-temp', 'temp', '°C');
+    eyeChart('hum', 'chart-hum', 'hum', '%');
+  }
+
+  function renderKpis(bundle) {
+    const k = bundle.kpi;
+    document.getElementById('kpi-records').textContent = k.record_count.toLocaleString('et-EE');
+    document.getElementById('kpi-time-range').textContent = fmtClock(k.start) + ' – ' + fmtClock(k.end);
+    document.getElementById('kpi-distance').textContent = k.total_distance_km.toLocaleString('et-EE', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' km';
+
+    const movH = Math.floor(k.moving_minutes / 60), movM = Math.round(k.moving_minutes % 60);
+    document.getElementById('kpi-moving').textContent = (movH ? movH + 'h ' : '') + movM + 'min';
+    document.getElementById('kpi-avg-speed').textContent = 'keskmine kiirus ' + k.avg_speed_kmh_when_moving.toLocaleString('et-EE') + ' km/h';
+
+    document.getElementById('kpi-max-speed').textContent = Math.round(k.max_speed_kmh) + ' km/h';
+    document.getElementById('kpi-trips').textContent = k.ignition_cycles + ' süütetsüklit';
+
+    document.getElementById('kpi-voltage').textContent = (k.voltage_min != null ? k.voltage_min.toFixed(1) + '–' + k.voltage_max.toFixed(1) + ' V' : '–');
+    document.getElementById('kpi-voltage-avg').textContent = k.voltage_avg != null ? 'keskmine ' + k.voltage_avg.toFixed(2) + ' V' : '';
+
+    document.getElementById('kpi-satellites').textContent = k.satellites_avg != null ? k.satellites_avg.toLocaleString('et-EE') : '–';
+    document.getElementById('kpi-hdop').textContent = k.hdop_avg != null ? 'keskmine, HDOP ' + k.hdop_avg.toFixed(2) : '';
+
+    document.getElementById('date-range').textContent = fmtDateTime(k.start) + ' – ' + fmtClock(k.end) + ' (Eesti aeg)';
+
+    const gapBanner = document.getElementById('gap-banner');
+    if (k.gaps && k.gaps.length) {
+      gapBanner.hidden = false;
+      const g = k.gaps[0];
+      const mins = Math.round(g.minutes);
+      const h = Math.floor(mins / 60), m = mins % 60;
+      document.getElementById('gap-banner-text').innerHTML =
+        '<strong>Andmelünk ' + fmtClock(g.from) + '–' + fmtClock(g.to) + ' (' + h + 'h ' + m + 'min).</strong> ' +
+        'Seadmelt ei tulnud selle aja jooksul ühtegi kirjet — vahemaa ja liikumisaja arvutus jätab selle perioodi teadlikult välja.';
+    } else {
+      gapBanner.hidden = true;
+    }
+  }
+
+  function renderEyeTable(bundle) {
+    const tbody = document.getElementById('eye-table-body');
+    while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+    function td(builder) { const c = document.createElement('td'); builder(c); return c; }
+    ['eye1', 'eye2', 'eye3'].forEach((k) => {
+      const s = bundle.eyeStats[k];
+      if (!s || !s.mac) return;
+      const tr = document.createElement('tr');
+      tr.appendChild(td((c) => {
+        const dot = document.createElement('span');
+        dot.className = 'sensor-dot'; dot.style.background = eyeColors[k];
+        c.appendChild(dot); c.appendChild(document.createTextNode(eyeLabels[k]));
+      }));
+      tr.appendChild(td((c) => { c.className = 'mono'; c.textContent = s.mac; }));
+      tr.appendChild(td((c) => { c.className = 'mono'; c.textContent = (s.temp_min != null ? s.temp_min.toFixed(1) + '–' + s.temp_max.toFixed(1) + ' °C' : '–'); }));
+      tr.appendChild(td((c) => { c.className = 'mono'; c.textContent = (s.humidity_min != null ? s.humidity_min.toFixed(0) + '–' + s.humidity_max.toFixed(0) + ' %' : '–'); }));
+      tr.appendChild(td((c) => { c.className = 'mono'; c.textContent = (s.battery != null ? s.battery + ' %' : '–'); }));
+      tr.appendChild(td((c) => { c.className = 'mono'; c.textContent = s.magnet_toggles + '×'; }));
+      tr.appendChild(td((c) => {
+        const pill = document.createElement('span');
+        pill.className = 'pill ' + (s.magnet_closed_now ? 'closed' : 'open');
+        pill.textContent = s.magnet_closed_now ? 'kinni' : 'lahti';
+        c.appendChild(pill);
+      }));
+      tbody.appendChild(tr);
+    });
+  }
+
+  function renderRoute(bundle) {
+    const pts = bundle.route;
+    const svg = document.getElementById('route-svg');
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    function el(tag, attrs) {
+      const node = document.createElementNS(SVG_NS, tag);
+      Object.keys(attrs).forEach((k) => node.setAttribute(k, attrs[k]));
+      return node;
+    }
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    const legend = document.getElementById('route-legend');
+    while (legend.firstChild) legend.removeChild(legend.firstChild);
+
+    if (!pts.length) {
+      legend.textContent = 'GPS-andmed puuduvad selle päeva jaoks.';
+      return;
+    }
+
+    const lats = pts.map(p => p.lat), lons = pts.map(p => p.lon);
+    const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+    const minLon = Math.min(...lons), maxLon = Math.max(...lons);
+    const midLat = (minLat + maxLat) / 2;
+    const lonScale = Math.cos(midLat * Math.PI / 180);
+
+    const W = 640, H = 380, PAD = 24;
+    const spanLat = Math.max(maxLat - minLat, 1e-5);
+    const spanLon = Math.max((maxLon - minLon) * lonScale, 1e-5);
+    const scale = Math.min((W - 2 * PAD) / spanLon, (H - 2 * PAD) / spanLat);
+
+    function project(lat, lon) {
+      const x = PAD + ((lon - minLon) * lonScale) * scale + (W - 2 * PAD - spanLon * scale) / 2;
+      const y = H - PAD - ((lat - minLat) * scale) - (H - 2 * PAD - spanLat * scale) / 2;
+      return [x, y];
+    }
+
+    const GAP_MS = 15 * 60 * 1000;
+    const segments = [[pts[0]]];
+    for (let i = 1; i < pts.length; i++) {
+      if (pts[i].t - pts[i - 1].t > GAP_MS) segments.push([]);
+      segments[segments.length - 1].push(pts[i]);
+    }
+
+    const segColors = [cv('--slot-1'), cv('--slot-2'), cv('--slot-3')];
+
+    for (let i = 0; i <= 4; i++) {
+      const y = PAD + i * (H - 2 * PAD) / 4;
+      svg.appendChild(el('line', { x1: PAD, y1: y, x2: W - PAD, y2: y, stroke: cv('--grid-line'), 'stroke-width': 1 }));
+    }
+    segments.forEach((seg, si) => {
+      if (seg.length < 2) return;
+      const color = segColors[si % segColors.length];
+      const d = seg.map((p, i) => {
+        const [x, y] = project(p.lat, p.lon);
+        return (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1);
+      }).join(' ');
+      svg.appendChild(el('path', { d, fill: 'none', stroke: color, 'stroke-width': 2.5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+      const [sx, sy] = project(seg[0].lat, seg[0].lon);
+      const [ex, ey] = project(seg[seg.length - 1].lat, seg[seg.length - 1].lon);
+      svg.appendChild(el('circle', { cx: sx, cy: sy, r: 5, fill: cv('--surface-1'), stroke: color, 'stroke-width': 2 }));
+      svg.appendChild(el('circle', { cx: ex, cy: ey, r: 4, fill: color }));
+
+      const item = document.createElement('span');
+      item.className = 'item';
+      const sw = document.createElement('span');
+      sw.className = 'sw'; sw.style.background = color;
+      item.appendChild(sw);
+      item.appendChild(document.createTextNode(
+        'Segment ' + (si + 1) + ' (' + fmtClock(new Date(seg[0].t).toISOString()) + '–' + fmtClock(new Date(seg[seg.length - 1].t).toISOString()) + ')'
+      ));
+      legend.appendChild(item);
+    });
+  }
+
+  function renderDashboard(bundle) {
+    safe('kpis', () => renderKpis(bundle));
+    safe('charts', () => renderCharts(bundle));
+    safe('eye table', () => renderEyeTable(bundle));
+    safe('route', () => renderRoute(bundle));
+    document.getElementById('gen-time').textContent = 'Laaditud ' + new Date().toLocaleString('et-EE', { timeZone: TZ });
+    document.getElementById('status-msg').hidden = true;
+    document.getElementById('dashboard-content').hidden = false;
+  }
+
+  function showStatus(msg, isError) {
+    const el = document.getElementById('status-msg');
+    el.textContent = msg;
+    el.className = 'status-msg' + (isError ? ' err' : '');
+    el.hidden = false;
+    document.getElementById('dashboard-content').hidden = true;
+  }
+
+  async function loadDate(dateStr) {
+    showStatus('Laadin andmeid…', false);
+    try {
+      const res = await fetch('/api/dashboard?date=' + encodeURIComponent(dateStr));
+      if (res.status === 404) {
+        showStatus('Selle päeva kohta andmeid ei leitud.', false);
+        return;
+      }
+      if (!res.ok) {
+        showStatus('Andmete laadimine ebaõnnestus (HTTP ' + res.status + ').', true);
+        return;
+      }
+      const bundle = await res.json();
+      renderDashboard(bundle);
+    } catch (e) {
+      console.error('[dashboard] load failed:', e);
+      showStatus('Andmete laadimine ebaõnnestus — kontrolli API ühendust.', true);
+    }
+  }
+
+  async function init() {
+    const picker = document.getElementById('date-picker');
+    try {
+      const res = await fetch('/api/dates');
+      const data = await res.json();
+      const dates = data.dates || [];
+      if (!dates.length) {
+        showStatus('Andmebaasis pole veel ühtegi päeva andmeid.', false);
+        return;
+      }
+      dates.forEach((d) => {
+        const opt = document.createElement('option');
+        opt.value = d;
+        opt.textContent = new Date(d + 'T00:00:00').toLocaleDateString('et-EE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+        picker.appendChild(opt);
+      });
+      picker.value = dates[0];
+      picker.addEventListener('change', () => loadDate(picker.value));
+      await loadDate(dates[0]);
+    } catch (e) {
+      console.error('[dashboard] init failed:', e);
+      showStatus('Ei saanud ühendust API-ga.', true);
+    }
+  }
+
+  init();
+})();
+</script>

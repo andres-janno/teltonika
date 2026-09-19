@@ -155,6 +155,51 @@ for on other Teltonika models; both were reverse-engineered against this
 specific device and firmware. `IO_NAMES` covers everything else. Adjust
 both if you connect a different device type.
 
+## Live dashboard (dashboard-api/)
+
+[dashboard-api/](dashboard-api/) is a small Flask API + a static HTML frontend
+that reads directly from the TimescaleDB `measurements` table and serves a
+live, per-day trip dashboard (route map, speed/voltage/GPS-quality charts,
+EYE sensor readings) — no manual regeneration needed, each page load queries
+fresh data.
+
+- **`app.py`** — Flask app (`/api/dates`, `/api/dashboard?date=YYYY-MM-DD`,
+  `/api/health`). Computes distance/moving-time/ignition-cycle stats
+  server-side (excluding any >15min data gaps from the moving-time/distance
+  sums), downsamples chart series, and returns one JSON bundle per day.
+  Connects as the read-only `teltonika_api` Postgres role (see below).
+- **`dashboard.html`** — static frontend (Chart.js from cdnjs, no build
+  step). Fetches `/api/dates` to populate a date picker, then
+  `/api/dashboard?date=...` to render. Deployed as-is to
+  `/var/www/html/teltonika-dashboard/index.html`.
+- **`teltonika-api.service`** — systemd unit (copy to
+  `/etc/systemd/system/`, same pattern as `teltonika2mqtt.service`). Needs
+  its own venv (`python3 -m venv venv && ./venv/bin/pip install -r
+  requirements.txt`) and a `.env` file (gitignored, chmod 600) with:
+  ```
+  TELTONIKA_DB_DSN=dbname=agro_tsdb user=teltonika_api password=<...> host=127.0.0.1
+  ```
+- **`teltonika.ventcap.ee-apache.conf`** — reference copy of the Apache
+  vhost (copy to `/etc/apache2/sites-available/`, `a2ensite`, reload).
+  Terminates TLS with the shared `*.ventcap.ee` wildcard cert, Basic-Auth
+  protects both the static site and the proxied `/api/` path
+  (`ProxyPass /api/ http://127.0.0.1:8811/api/`), and redirects `:80` to
+  `:443`.
+
+The `teltonika_api` Postgres role only has `SELECT` on `measurements` —
+create it once with:
+
+```sql
+CREATE ROLE teltonika_api LOGIN PASSWORD '...';
+GRANT CONNECT ON DATABASE agro_tsdb TO teltonika_api;
+GRANT USAGE ON SCHEMA public TO teltonika_api;
+GRANT SELECT ON measurements TO teltonika_api;
+```
+
+Note: `dashboard-api/venv/` uses absolute shebang paths baked in at
+creation time — if you ever move this directory, recreate the venv
+in place rather than `mv`-ing an existing one.
+
 ## Development
 Mapping from server to local filesystem for development in code.
 ```bash

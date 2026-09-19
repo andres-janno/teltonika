@@ -1,0 +1,18 @@
+[Unit]
+Description=Teltonika dashboard API
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=debian
+WorkingDirectory=/home/debian/teltonika/dashboard-api
+EnvironmentFile=/home/debian/teltonika/dashboard-api/.env
+ExecStart=/home/debian/teltonika/dashboard-api/venv/bin/gunicorn -w 2 -b 127.0.0.1:8811 app:app
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
