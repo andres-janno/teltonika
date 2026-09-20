@@ -96,6 +96,34 @@ WHERE measurement='data' AND device IS NOT NULL
 ORDER BY device
 """
 
+MACS_SQL = """
+SELECT DISTINCT value_text AS mac
+FROM measurements
+WHERE measurement IN ('eye1','eye2','eye3') AND field='mac' AND value_text IS NOT NULL
+ORDER BY mac
+"""
+
+# Every EYE record for this attachment (identified by MAC), wherever and
+# whenever it was seen - joins the "mac" field's (device, measurement, time)
+# back onto the other fields sharing that same key, since each is its own
+# row in the long/narrow schema.
+MAC_USAGE_SQL = """
+WITH mac_keys AS (
+  SELECT device, measurement, time
+  FROM measurements
+  WHERE measurement IN ('eye1','eye2','eye3') AND field='mac' AND value_text=%s
+)
+SELECT k.device, k.measurement, k.time,
+  MAX(CASE WHEN m.field='eye_temperature_c' THEN m.value_double END) AS temp,
+  MAX(CASE WHEN m.field='eye_humidity_percent' THEN m.value_bigint END) AS humidity,
+  MAX(CASE WHEN m.field='eye_battery_percent' THEN m.value_bigint END) AS battery,
+  BOOL_OR(CASE WHEN m.field='eye_magnet_closed' THEN m.value_bool END) AS magnet_closed
+FROM mac_keys k
+JOIN measurements m ON m.device = k.device AND m.measurement = k.measurement AND m.time = k.time
+GROUP BY k.device, k.measurement, k.time
+ORDER BY k.time
+"""
+
 
 def fetch_rows(cur, sql, params):
     cur.execute(sql, params)
@@ -243,6 +271,90 @@ def build_dashboard(imei, date_str):
     return {"kpi": kpi, "series": series, "route": route, "eye": eye_series, "eyeStats": eye_stats}
 
 
+def build_mac_usage(mac):
+    """Full history for one EYE sensor (attachment), identified by its MAC,
+    across every tractor (device) and day it has ever been seen on -
+    answers 'how long was this attachment used, independent of tractor'."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            rows = fetch_rows(cur, MAC_USAGE_SQL, (mac,))
+    finally:
+        conn.close()
+
+    if not rows:
+        return None
+
+    # Sightings: contiguous stretches on the same device, split into
+    # per-day segments for a readable summary table.
+    sightings = []
+    cur_key = None
+    for r in rows:
+        day = r["time"].astimezone(TZ).date().isoformat()
+        key = (r["device"], day)
+        if key != cur_key:
+            sightings.append({
+                "device": r["device"], "day": day,
+                "first_seen": r["time"].isoformat(), "last_seen": r["time"].isoformat(),
+                "records": 0,
+            })
+            cur_key = key
+        s = sightings[-1]
+        s["last_seen"] = r["time"].isoformat()
+        s["records"] += 1
+
+    temps = [r["temp"] for r in rows if r["temp"] is not None]
+    hums = [r["humidity"] for r in rows if r["humidity"] is not None]
+    batts = [r["battery"] for r in rows if r["battery"] is not None]
+
+    toggles = 0
+    prev_magnet = None
+    for r in rows:
+        if r["magnet_closed"] is None:
+            continue
+        if prev_magnet is not None and r["magnet_closed"] != prev_magnet:
+            toggles += 1
+        prev_magnet = r["magnet_closed"]
+
+    stats = {
+        "mac": mac,
+        "first_seen": rows[0]["time"].isoformat(),
+        "last_seen": rows[-1]["time"].isoformat(),
+        "record_count": len(rows),
+        "device_count": len({r["device"] for r in rows}),
+        "day_count": len({r["time"].astimezone(TZ).date() for r in rows}),
+        "temp_min": min(temps) if temps else None,
+        "temp_max": max(temps) if temps else None,
+        "temp_avg": round(sum(temps) / len(temps), 2) if temps else None,
+        "humidity_min": min(hums) if hums else None,
+        "humidity_max": max(hums) if hums else None,
+        "battery": int(batts[-1]) if batts else None,
+        "magnet_toggles": toggles,
+        "magnet_closed_now": prev_magnet,
+    }
+
+    def to_xy(rows_, key):
+        pts = []
+        for i, r in enumerate(rows_):
+            x = int(r["time"].timestamp() * 1000)
+            broke = False
+            if i > 0:
+                prev = rows_[i - 1]
+                gap_s = (r["time"] - prev["time"]).total_seconds()
+                if gap_s > GAP_S or r["device"] != prev["device"]:
+                    broke = True
+            if broke:
+                pts.append({"x": x - 1, "y": None})
+            val = r[key]
+            pts.append({"x": x, "y": float(val) if val is not None else None})
+        return pts
+
+    rows_ds = downsample(rows, 500)
+    series = {"temp": to_xy(rows_ds, "temp"), "hum": to_xy(rows_ds, "humidity")}
+
+    return {"stats": stats, "sightings": sightings, "series": series}
+
+
 @app.route("/api/imeis")
 def api_imeis():
     conn = get_conn()
@@ -289,6 +401,30 @@ def api_dashboard():
     bundle = build_dashboard(imei, date_str)
     if bundle is None:
         return jsonify({"error": "no data for this date"}), 404
+    return jsonify(bundle)
+
+
+@app.route("/api/macs")
+def api_macs():
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(MACS_SQL)
+            macs = [row[0] for row in cur.fetchall()]
+    finally:
+        conn.close()
+    return jsonify({"macs": macs})
+
+
+@app.route("/api/mac-usage")
+def api_mac_usage():
+    mac = request.args.get("mac")
+    if not mac:
+        return jsonify({"error": "mac is required"}), 400
+
+    bundle = build_mac_usage(mac)
+    if bundle is None:
+        return jsonify({"error": "no data for this mac"}), 404
     return jsonify(bundle)
 
 

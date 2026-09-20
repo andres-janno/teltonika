@@ -111,7 +111,7 @@
     gap: 10px;
     flex-wrap: wrap;
   }
-  #date-picker, #imei-picker {
+  #date-picker, #imei-picker, #mac-picker {
     font-family: 'IBM Plex Mono', monospace;
     font-size: 13px;
     background: var(--surface-1);
@@ -120,6 +120,27 @@
     border-radius: 6px;
     padding: 5px 8px;
   }
+
+  .view-toggle {
+    display: flex;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .view-toggle button {
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 13px;
+    font-weight: 500;
+    border: none;
+    background: var(--surface-1);
+    color: var(--text-secondary);
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  .view-toggle button + button { border-left: 1px solid var(--border); }
+  .view-toggle button.active { background: var(--accent); color: var(--accent-ink); }
+
+  .sightings-table-wrap { overflow-x: auto; margin-top: 4px; }
 
   .status-msg {
     text-align: center;
@@ -283,11 +304,23 @@
   <header class="top">
     <div>
       <h1>Traktori telemeetria</h1>
-      <div class="meta">FMC650 · IMEI <span class="mono" id="imei-label">—</span></div>
+      <div class="meta" id="header-meta">
+        <span id="meta-vehicle">FMC650 · IMEI <span class="mono" id="imei-label">—</span></span>
+        <span id="meta-attachment" hidden>Teltonika EYE andur · MAC <span class="mono" id="mac-label">—</span></span>
+      </div>
     </div>
     <div class="header-right">
-      <select id="imei-picker"></select>
-      <select id="date-picker"></select>
+      <div class="view-toggle">
+        <button type="button" class="view-btn active" data-view="vehicle">Sõiduk</button>
+        <button type="button" class="view-btn" data-view="attachment">Haakeriist</button>
+      </div>
+      <div id="vehicle-controls" style="display:flex; gap:10px">
+        <select id="imei-picker"></select>
+        <select id="date-picker"></select>
+      </div>
+      <div id="attachment-controls" hidden style="display:flex; gap:10px">
+        <select id="mac-picker"></select>
+      </div>
       <div class="meta mono" id="date-range">—</div>
     </div>
   </header>
@@ -399,6 +432,65 @@
     <footer class="foot">
       <span>Allikas: TimescaleDB <span class="mono">measurements</span> tabel (teltonika2mqtt gateway, FMC650) — live</span>
       <span id="gen-time" class="mono"></span>
+    </footer>
+  </div>
+
+  <div id="attachment-content" hidden>
+    <div class="kpi-row" style="margin-bottom:20px">
+      <div class="kpi">
+        <div class="label">Nähtud</div>
+        <div class="value mono" id="mac-kpi-days">–</div>
+        <div class="sub" id="mac-kpi-range">–</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Traktoreid</div>
+        <div class="value mono" id="mac-kpi-devices">–</div>
+        <div class="sub">erinevat seadet</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Temperatuur</div>
+        <div class="value mono" id="mac-kpi-temp">–</div>
+        <div class="sub" id="mac-kpi-temp-avg">–</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Niiskus</div>
+        <div class="value mono" id="mac-kpi-hum">–</div>
+        <div class="sub">mõõdetud vahemik</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Aku</div>
+        <div class="value mono" id="mac-kpi-battery">–</div>
+        <div class="sub" id="mac-kpi-magnet">–</div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom:20px">
+      <h2>Millal ja kus kasutusel</h2>
+      <p class="panel-sub">Iga rida = üks traktor + üks päev, mil see haakeriist selle küljes oli</p>
+      <div class="sightings-table-wrap">
+        <table class="eye-table">
+          <thead><tr><th>Traktor (IMEI)</th><th>Päev</th><th>Esimest nähtud</th><th>Viimati nähtud</th><th>Kirjeid</th></tr></thead>
+          <tbody id="sightings-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="grid-2-even" style="margin-bottom:20px">
+      <div class="panel">
+        <h2>Temperatuur ajas</h2>
+        <p class="panel-sub">°C, katkestus näitab traktori vahetust või andmelünka</p>
+        <div class="chart-box"><canvas id="chart-mac-temp"></canvas></div>
+      </div>
+      <div class="panel">
+        <h2>Niiskus ajas</h2>
+        <p class="panel-sub">%, katkestus näitab traktori vahetust või andmelünka</p>
+        <div class="chart-box"><canvas id="chart-mac-hum"></canvas></div>
+      </div>
+    </div>
+
+    <footer class="foot">
+      <span>Allikas: TimescaleDB <span class="mono">measurements</span> tabel — täisajalugu, kõik traktorid</span>
+      <span id="mac-gen-time" class="mono"></span>
     </footer>
   </div>
 </div>
@@ -677,6 +769,7 @@
     el.className = 'status-msg' + (isError ? ' err' : '');
     el.hidden = false;
     document.getElementById('dashboard-content').hidden = true;
+    document.getElementById('attachment-content').hidden = true;
   }
 
   async function loadDashboard(imei, dateStr) {
@@ -723,7 +816,7 @@
     await loadDashboard(imei, chosen);
   }
 
-  async function init() {
+  async function initVehicle() {
     const imeiPicker = document.getElementById('imei-picker');
     const datePicker = document.getElementById('date-picker');
     try {
@@ -746,13 +839,150 @@
       datePicker.addEventListener('change', () => loadDashboard(imeiPicker.value, datePicker.value));
 
       await loadDatesForImei(imeis[0]);
+      vehicleInitialized = true;
     } catch (e) {
       console.error('[dashboard] init failed:', e);
       showStatus('Ei saanud ühendust API-ga.', true);
     }
   }
 
-  init();
+  // --- Attachment (MAC) view - full history across every tractor/day ---
+  const macCharts = {};
+  function destroyMacCharts() {
+    Object.values(macCharts).forEach((c) => { try { c.destroy(); } catch (e) {} });
+  }
+
+  function renderMacUsage(bundle) {
+    document.getElementById('mac-label').textContent = bundle.stats.mac;
+    safe('mac kpis', () => {
+      const s = bundle.stats;
+      document.getElementById('mac-kpi-days').textContent = s.day_count;
+      document.getElementById('mac-kpi-range').textContent =
+        new Date(s.first_seen).toLocaleDateString('et-EE', { day: '2-digit', month: '2-digit', year: 'numeric' }) +
+        ' – ' + new Date(s.last_seen).toLocaleDateString('et-EE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+      document.getElementById('mac-kpi-devices').textContent = s.device_count;
+      document.getElementById('mac-kpi-temp').textContent = (s.temp_min != null ? s.temp_min.toFixed(1) + '–' + s.temp_max.toFixed(1) + ' °C' : '–');
+      document.getElementById('mac-kpi-temp-avg').textContent = s.temp_avg != null ? 'keskmine ' + s.temp_avg.toFixed(1) + ' °C' : '';
+      document.getElementById('mac-kpi-hum').textContent = (s.humidity_min != null ? s.humidity_min.toFixed(0) + '–' + s.humidity_max.toFixed(0) + ' %' : '–');
+      document.getElementById('mac-kpi-battery').textContent = s.battery != null ? s.battery + ' %' : '–';
+      document.getElementById('mac-kpi-magnet').textContent = s.magnet_toggles + '× magnet, praegu ' + (s.magnet_closed_now ? 'kinni' : 'lahti');
+    });
+
+    safe('sightings table', () => {
+      const tbody = document.getElementById('sightings-table-body');
+      while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+      bundle.sightings.forEach((s) => {
+        const tr = document.createElement('tr');
+        function td(text) { const c = document.createElement('td'); c.className = 'mono'; c.textContent = text; return c; }
+        tr.appendChild(td(s.device));
+        tr.appendChild(td(new Date(s.day + 'T00:00:00').toLocaleDateString('et-EE', { day: '2-digit', month: '2-digit', year: 'numeric' })));
+        tr.appendChild(td(fmtClock(s.first_seen)));
+        tr.appendChild(td(fmtClock(s.last_seen)));
+        tr.appendChild(td(s.records));
+        tbody.appendChild(tr);
+      });
+    });
+
+    safe('mac charts', () => {
+      if (typeof Chart === 'undefined') return;
+      destroyMacCharts();
+      macCharts.temp = new Chart(document.getElementById('chart-mac-temp'), {
+        type: 'line',
+        data: { datasets: [lineDataset('Temperatuur', bundle.series.temp, cv('--slot-1'))] },
+        options: baseLineOptions('°C')
+      });
+      macCharts.hum = new Chart(document.getElementById('chart-mac-hum'), {
+        type: 'line',
+        data: { datasets: [lineDataset('Niiskus', bundle.series.hum, cv('--slot-3'))] },
+        options: baseLineOptions('%')
+      });
+    });
+
+    document.getElementById('mac-gen-time').textContent = 'Laaditud ' + new Date().toLocaleString('et-EE', { timeZone: TZ });
+    document.getElementById('status-msg').hidden = true;
+    document.getElementById('attachment-content').hidden = false;
+  }
+
+  async function loadMacUsage(mac) {
+    showStatus('Laadin andmeid…', false);
+    try {
+      const res = await fetch('/api/mac-usage?mac=' + encodeURIComponent(mac));
+      if (res.status === 404) {
+        showStatus('Selle MAC-i kohta andmeid ei leitud.', false);
+        return;
+      }
+      if (!res.ok) {
+        showStatus('Andmete laadimine ebaõnnestus (HTTP ' + res.status + ').', true);
+        return;
+      }
+      const bundle = await res.json();
+      renderMacUsage(bundle);
+    } catch (e) {
+      console.error('[dashboard] mac load failed:', e);
+      showStatus('Andmete laadimine ebaõnnestus — kontrolli API ühendust.', true);
+    }
+  }
+
+  async function initAttachment() {
+    const macPicker = document.getElementById('mac-picker');
+    try {
+      const res = await fetch('/api/macs');
+      const data = await res.json();
+      const macs = data.macs || [];
+      if (!macs.length) {
+        showStatus('Andmebaasis pole veel ühtegi EYE anduri andmeid.', false);
+        return;
+      }
+      macs.forEach((mac) => {
+        const opt = document.createElement('option');
+        opt.value = mac; opt.textContent = mac;
+        macPicker.appendChild(opt);
+      });
+      macPicker.value = macs[0];
+      macPicker.addEventListener('change', () => loadMacUsage(macPicker.value));
+      await loadMacUsage(macs[0]);
+      attachmentInitialized = true;
+    } catch (e) {
+      console.error('[dashboard] attachment init failed:', e);
+      showStatus('Ei saanud ühendust API-ga.', true);
+    }
+  }
+
+  // --- View toggle ---
+  let vehicleInitialized = false;
+  let attachmentInitialized = false;
+
+  function switchView(view) {
+    document.querySelectorAll('.view-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
+    document.getElementById('vehicle-controls').hidden = view !== 'vehicle';
+    document.getElementById('attachment-controls').hidden = view !== 'attachment';
+    document.getElementById('meta-vehicle').hidden = view !== 'vehicle';
+    document.getElementById('meta-attachment').hidden = view !== 'attachment';
+
+    if (view === 'vehicle') {
+      document.getElementById('attachment-content').hidden = true;
+      if (vehicleInitialized) {
+        document.getElementById('status-msg').hidden = true;
+        document.getElementById('dashboard-content').hidden = false;
+      } else {
+        initVehicle();
+      }
+    } else {
+      document.getElementById('dashboard-content').hidden = true;
+      if (attachmentInitialized) {
+        document.getElementById('status-msg').hidden = true;
+        document.getElementById('attachment-content').hidden = false;
+      } else {
+        initAttachment();
+      }
+    }
+  }
+
+  document.querySelectorAll('.view-btn').forEach((btn) => {
+    btn.addEventListener('click', () => switchView(btn.dataset.view));
+  });
+
+  initVehicle();
 })();
 </script>
 </body>
