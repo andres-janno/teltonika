@@ -507,8 +507,14 @@ async def handle_teltonika(reader, writer):
                         merged = last_seen_eye_values.setdefault((imei, slot), {})
                         merged.update(eye_slot_values[slot])
 
-                        if not merged and slot_macs[slot] is None:
-                            continue  # nothing at all known for this slot yet
+                        if not merged:
+                            # No real reading ever confirmed for this slot
+                            # (or the last one was cleared as a disconnected-
+                            # sensor zero) - skip publishing/storing a
+                            # mac-only record every cycle just because the
+                            # MAC itself is known from beacon detection or
+                            # the static config file.
+                            continue
 
                         eye_rec = {
                             "timestamp": rec["timestamp"],
