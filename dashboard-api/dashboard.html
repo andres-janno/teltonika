@@ -914,31 +914,33 @@
         lineDataset('Magnet', bundle.series.magnet, cv('--slot-2')),
         { stepped: true, fill: true, backgroundColor: cv('--slot-2') + '1a' }
       );
+      const magnetOptions = baseLineOptions('', {
+        plugins: {
+          legend: { display: false },
+          tooltip: Object.assign({}, baseLineOptions().plugins.tooltip, {
+            callbacks: {
+              title: (items) => items.length ? fmtTime(items[0].parsed.x) : '',
+              label: (item) => item.parsed.y === 1 ? 'Kinni' : item.parsed.y === 0 ? 'Lahti' : '',
+            }
+          })
+        }
+      });
+      // baseLineOptions merges `extra` shallowly, so scales.y is patched
+      // directly here instead of via `extra` - otherwise it would wipe out
+      // the linear x-axis (time) config that scales.x carries.
+      magnetOptions.scales.y = {
+        grid: { color: cv('--grid-line') },
+        ticks: {
+          color: cv('--text-muted'),
+          stepSize: 1,
+          callback: (v) => (v === 1 ? 'Kinni' : v === 0 ? 'Lahti' : ''),
+        },
+        min: -0.2, max: 1.2,
+      };
       macCharts.magnet = new Chart(document.getElementById('chart-mac-magnet'), {
         type: 'line',
         data: { datasets: [magnetDataset] },
-        options: baseLineOptions('', {
-          scales: {
-            y: {
-              grid: { color: cv('--grid-line') },
-              ticks: {
-                color: cv('--text-muted'),
-                stepSize: 1,
-                callback: (v) => (v === 1 ? 'Kinni' : v === 0 ? 'Lahti' : ''),
-              },
-              min: -0.2, max: 1.2,
-            }
-          },
-          plugins: {
-            legend: { display: false },
-            tooltip: Object.assign({}, baseLineOptions().plugins.tooltip, {
-              callbacks: {
-                title: (items) => items.length ? fmtTime(items[0].parsed.x) : '',
-                label: (item) => item.parsed.y === 1 ? 'Kinni' : item.parsed.y === 0 ? 'Lahti' : '',
-              }
-            })
-          }
-        })
+        options: magnetOptions
       });
     });
 
