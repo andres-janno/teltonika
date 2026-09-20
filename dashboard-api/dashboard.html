@@ -817,8 +817,13 @@
       imeiPicker.value = imeis[0];
 
       imeiPicker.addEventListener('change', () => {
-        windowBtns.forEach((b) => b.classList.remove('active'));
-        loadDatesForImei(imeiPicker.value);
+        // Switching tractor is a filter change, not a period change - keep
+        // whichever period (window or date) was already selected.
+        if (currentHours) {
+          loadDashboard(imeiPicker.value, { hours: currentHours });
+        } else {
+          loadDatesForImei(imeiPicker.value, currentDate);
+        }
       });
       datePicker.addEventListener('change', () => {
         windowBtns.forEach((b) => b.classList.remove('active'));
@@ -968,8 +973,9 @@
       });
       macPicker.value = macs[0];
       macPicker.addEventListener('change', () => {
-        windowBtns.forEach((b) => b.classList.toggle('active', !b.dataset.hours));
-        loadMacUsage(macPicker.value, false, null);
+        // Switching attachment is a filter change, not a period change -
+        // keep whichever window was already selected.
+        loadMacUsage(macPicker.value, false, currentMacHours);
       });
       windowBtns.forEach((b) => b.addEventListener('click', () => {
         windowBtns.forEach((x) => x.classList.toggle('active', x === b));
