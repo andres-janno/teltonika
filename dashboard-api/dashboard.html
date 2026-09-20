@@ -349,9 +349,20 @@
       <div id="vehicle-controls" class="control-group">
         <select id="imei-picker"></select>
         <select id="date-picker"></select>
+        <div class="view-toggle window-toggle" id="vehicle-window-toggle">
+          <button type="button" class="window-btn" data-hours="4">4h</button>
+          <button type="button" class="window-btn" data-hours="8">8h</button>
+          <button type="button" class="window-btn" data-hours="24">24h</button>
+        </div>
       </div>
       <div id="attachment-controls" class="control-group" hidden>
         <select id="mac-picker"></select>
+        <div class="view-toggle window-toggle" id="attachment-window-toggle">
+          <button type="button" class="window-btn active" data-hours="">Kõik</button>
+          <button type="button" class="window-btn" data-hours="4">4h</button>
+          <button type="button" class="window-btn" data-hours="8">8h</button>
+          <button type="button" class="window-btn" data-hours="24">24h</button>
+        </div>
       </div>
       <div class="meta mono" id="date-range">—</div>
       <button type="button" id="refresh-btn" class="refresh-btn" title="Värskenda andmed"><span id="refresh-icon">↻</span> Värskenda</button>
@@ -732,15 +743,22 @@
     document.getElementById('attachment-content').hidden = true;
   }
 
-  async function loadDashboard(imei, dateStr, silent) {
+  async function loadDashboard(imei, opts, silent) {
     currentImei = imei;
-    currentDate = dateStr;
+    if (opts && opts.hours) {
+      currentHours = opts.hours;
+      currentDate = null;
+    } else {
+      currentDate = opts && opts.date;
+      currentHours = null;
+    }
     if (!silent) showStatus('Laadin andmeid…', false);
     try {
-      const url = '/api/dashboard?imei=' + encodeURIComponent(imei) + '&date=' + encodeURIComponent(dateStr);
+      const qs = currentHours ? 'hours=' + encodeURIComponent(currentHours) : 'date=' + encodeURIComponent(currentDate);
+      const url = '/api/dashboard?imei=' + encodeURIComponent(imei) + '&' + qs;
       const res = await fetch(url);
       if (res.status === 404) {
-        if (!silent) showStatus('Selle päeva kohta andmeid ei leitud.', false);
+        if (!silent) showStatus(currentHours ? 'Selle ajavahemiku kohta andmeid ei leitud.' : 'Selle päeva kohta andmeid ei leitud.', false);
         return;
       }
       if (!res.ok) {
@@ -775,12 +793,13 @@
     });
     const chosen = (preferredDate && dates.includes(preferredDate)) ? preferredDate : dates[0];
     datePicker.value = chosen;
-    await loadDashboard(imei, chosen);
+    await loadDashboard(imei, { date: chosen });
   }
 
   async function initVehicle() {
     const imeiPicker = document.getElementById('imei-picker');
     const datePicker = document.getElementById('date-picker');
+    const windowBtns = document.querySelectorAll('#vehicle-window-toggle .window-btn');
     try {
       const res = await fetch('/api/imeis');
       const data = await res.json();
@@ -797,8 +816,18 @@
       });
       imeiPicker.value = imeis[0];
 
-      imeiPicker.addEventListener('change', () => loadDatesForImei(imeiPicker.value));
-      datePicker.addEventListener('change', () => loadDashboard(imeiPicker.value, datePicker.value));
+      imeiPicker.addEventListener('change', () => {
+        windowBtns.forEach((b) => b.classList.remove('active'));
+        loadDatesForImei(imeiPicker.value);
+      });
+      datePicker.addEventListener('change', () => {
+        windowBtns.forEach((b) => b.classList.remove('active'));
+        loadDashboard(imeiPicker.value, { date: datePicker.value });
+      });
+      windowBtns.forEach((b) => b.addEventListener('click', () => {
+        windowBtns.forEach((x) => x.classList.toggle('active', x === b));
+        loadDashboard(currentImei, { hours: Number(b.dataset.hours) });
+      }));
 
       await loadDatesForImei(imeis[0]);
       vehicleInitialized = true;
@@ -898,11 +927,13 @@
     document.getElementById('attachment-content').hidden = false;
   }
 
-  async function loadMacUsage(mac, silent) {
+  async function loadMacUsage(mac, silent, hours) {
     currentMac = mac;
+    currentMacHours = hours || null;
     if (!silent) showStatus('Laadin andmeid…', false);
     try {
-      const res = await fetch('/api/mac-usage?mac=' + encodeURIComponent(mac));
+      const url = '/api/mac-usage?mac=' + encodeURIComponent(mac) + (currentMacHours ? '&hours=' + currentMacHours : '');
+      const res = await fetch(url);
       if (res.status === 404) {
         if (!silent) showStatus('Selle MAC-i kohta andmeid ei leitud.', false);
         return;
@@ -921,6 +952,7 @@
 
   async function initAttachment() {
     const macPicker = document.getElementById('mac-picker');
+    const windowBtns = document.querySelectorAll('#attachment-window-toggle .window-btn');
     try {
       const res = await fetch('/api/macs');
       const data = await res.json();
@@ -935,8 +967,15 @@
         macPicker.appendChild(opt);
       });
       macPicker.value = macs[0];
-      macPicker.addEventListener('change', () => loadMacUsage(macPicker.value));
-      await loadMacUsage(macs[0]);
+      macPicker.addEventListener('change', () => {
+        windowBtns.forEach((b) => b.classList.toggle('active', !b.dataset.hours));
+        loadMacUsage(macPicker.value, false, null);
+      });
+      windowBtns.forEach((b) => b.addEventListener('click', () => {
+        windowBtns.forEach((x) => x.classList.toggle('active', x === b));
+        loadMacUsage(currentMac, false, b.dataset.hours ? Number(b.dataset.hours) : null);
+      }));
+      await loadMacUsage(macs[0], false, null);
       attachmentInitialized = true;
     } catch (e) {
       console.error('[dashboard] attachment init failed:', e);
@@ -948,7 +987,7 @@
   let vehicleInitialized = false;
   let attachmentInitialized = false;
   let currentView = 'vehicle';
-  let currentImei = null, currentDate = null, currentMac = null;
+  let currentImei = null, currentDate = null, currentHours = null, currentMac = null, currentMacHours = null;
 
   function switchView(view) {
     currentView = view;
@@ -988,9 +1027,11 @@
     icon.classList.add('spinning');
     try {
       if (currentView === 'vehicle') {
-        if (currentImei && currentDate) await loadDashboard(currentImei, currentDate, true);
+        if (currentImei && (currentDate || currentHours)) {
+          await loadDashboard(currentImei, currentHours ? { hours: currentHours } : { date: currentDate }, true);
+        }
       } else {
-        if (currentMac) await loadMacUsage(currentMac, true);
+        if (currentMac) await loadMacUsage(currentMac, true, currentMacHours);
       }
       // Keep the spin visible for a moment even on very fast responses,
       // so a click always reads as "something happened".

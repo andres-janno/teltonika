@@ -106,12 +106,15 @@ ORDER BY mac
 # Every EYE record for this attachment (identified by MAC), wherever and
 # whenever it was seen - joins the "mac" field's (device, measurement, time)
 # back onto the other fields sharing that same key, since each is its own
-# row in the long/narrow schema.
+# row in the long/narrow schema. %(start)s is optional (NULL = full
+# history) so the same query serves both the "all time" and "last N hours"
+# window views.
 MAC_USAGE_SQL = """
 WITH mac_keys AS (
   SELECT device, measurement, time
   FROM measurements
-  WHERE measurement IN ('eye1','eye2','eye3') AND field='mac' AND value_text=%s
+  WHERE measurement IN ('eye1','eye2','eye3') AND field='mac' AND value_text=%(mac)s
+    AND (%(start)s::timestamptz IS NULL OR time >= %(start)s)
 )
 SELECT k.device, k.measurement, k.time,
   MAX(CASE WHEN m.field='eye_temperature_c' THEN m.value_double END) AS temp,
@@ -133,7 +136,24 @@ def fetch_rows(cur, sql, params):
 
 def build_dashboard(imei, date_str):
     start_utc, end_utc = day_bounds_utc(date_str)
+    bundle = build_dashboard_range(imei, start_utc, end_utc)
+    if bundle:
+        bundle["kpi"]["date"] = date_str
+        bundle["kpi"]["hours"] = None
+    return bundle
 
+
+def build_dashboard_hours(imei, hours):
+    end_utc = datetime.now(timezone.utc)
+    start_utc = end_utc - timedelta(hours=hours)
+    bundle = build_dashboard_range(imei, start_utc, end_utc)
+    if bundle:
+        bundle["kpi"]["date"] = None
+        bundle["kpi"]["hours"] = hours
+    return bundle
+
+
+def build_dashboard_range(imei, start_utc, end_utc):
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -187,7 +207,6 @@ def build_dashboard(imei, date_str):
 
     kpi = {
         "imei": imei,
-        "date": date_str,
         "record_count": len(data_rows),
         "start": data_rows[0]["time"].isoformat(),
         "end": data_rows[-1]["time"].isoformat(),
@@ -271,14 +290,17 @@ def build_dashboard(imei, date_str):
     return {"kpi": kpi, "series": series, "route": route, "eye": eye_series, "eyeStats": eye_stats}
 
 
-def build_mac_usage(mac):
-    """Full history for one EYE sensor (attachment), identified by its MAC,
-    across every tractor (device) and day it has ever been seen on -
-    answers 'how long was this attachment used, independent of tractor'."""
+def build_mac_usage(mac, hours=None):
+    """History for one EYE sensor (attachment), identified by its MAC,
+    across every tractor (device) it has ever been seen on - answers 'how
+    long was this attachment used, independent of tractor'. With `hours`
+    set, restricted to the last N hours from now instead of full history."""
+    start_utc = datetime.now(timezone.utc) - timedelta(hours=hours) if hours else None
+
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            rows = fetch_rows(cur, MAC_USAGE_SQL, (mac,))
+            rows = fetch_rows(cur, MAC_USAGE_SQL, {"mac": mac, "start": start_utc})
     finally:
         conn.close()
 
@@ -318,6 +340,7 @@ def build_mac_usage(mac):
 
     stats = {
         "mac": mac,
+        "hours": hours,
         "first_seen": rows[0]["time"].isoformat(),
         "last_seen": rows[-1]["time"].isoformat(),
         "record_count": len(rows),
@@ -387,11 +410,29 @@ def api_dates():
     return jsonify({"dates": dates})
 
 
+def parse_positive_int(raw):
+    value = int(raw)
+    if value <= 0:
+        raise ValueError("must be positive")
+    return value
+
+
 @app.route("/api/dashboard")
 def api_dashboard():
     imei = request.args.get("imei")
     if not imei:
         return jsonify({"error": "imei is required"}), 400
+
+    hours_str = request.args.get("hours")
+    if hours_str:
+        try:
+            hours = parse_positive_int(hours_str)
+        except ValueError:
+            return jsonify({"error": "invalid hours, expected a positive integer"}), 400
+        bundle = build_dashboard_hours(imei, hours)
+        if bundle is None:
+            return jsonify({"error": "no data in this window"}), 404
+        return jsonify(bundle)
 
     date_str = request.args.get("date")
     if not date_str:
@@ -426,7 +467,15 @@ def api_mac_usage():
     if not mac:
         return jsonify({"error": "mac is required"}), 400
 
-    bundle = build_mac_usage(mac)
+    hours = None
+    hours_str = request.args.get("hours")
+    if hours_str:
+        try:
+            hours = parse_positive_int(hours_str)
+        except ValueError:
+            return jsonify({"error": "invalid hours, expected a positive integer"}), 400
+
+    bundle = build_mac_usage(mac, hours)
     if bundle is None:
         return jsonify({"error": "no data for this mac"}), 404
     return jsonify(bundle)
