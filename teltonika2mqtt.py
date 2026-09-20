@@ -135,6 +135,15 @@ DISABLED_IO_IDS = {22, 67, 68}
 # 327.67 C / 32767% / corrupted magnet-flag reading.
 EYE_ERROR_SENTINEL = 32767
 
+# Battery/temperature/humidity all reading exactly 0 at once is the FMC650's
+# signal for "no BLE sensor currently connected in this slot" - confirmed by
+# comparing slots on the same device at the same time: a slot with a live
+# sensor keeps reporting real values (e.g. ~26 C) while a slot with nothing
+# paired/in-range sits at this all-zero combination for as long as it's
+# disconnected. Unlike EYE_ERROR_SENTINEL (a failed read attempt), this is
+# "nothing to read" - discarded in translate_io_values() so it doesn't
+# overwrite the last real reading or get published/stored as a bogus 0.
+
 # Teltonika IO ID lookup table (English parameter names), for everything
 # that ISN'T one of the per-slot EYE fields above.
 IO_NAMES = {
@@ -350,6 +359,12 @@ def translate_io_values(io_data):
         else:
             name = IO_NAMES.get(io_id, f"io_{io_id}")
             fmc_values[name] = val
+
+    for slot, vals in eye_slot_values.items():
+        if (vals.get("eye_battery_percent") == 0
+                and vals.get("eye_temperature_c") == 0
+                and vals.get("eye_humidity_percent") == 0):
+            eye_slot_values[slot] = {}
 
     return fmc_values, eye_slot_values
 
