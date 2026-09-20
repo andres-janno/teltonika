@@ -128,6 +128,13 @@ EYE_SLOT_FIELDS = {
 # official AVL ID meaning, unrelated to our EYE sensors - removed).
 DISABLED_IO_IDS = {22, 67, 68}
 
+# Observed on multiple EYE_SLOT_FIELDS (temperature, humidity) when a
+# reading fails - e.g. the sensor was briefly out of BLE range. 0x7FFF, the
+# max signed/unsigned 16-bit value - a common "invalid reading" convention.
+# Filtered out in translate_io_values() rather than published as a bogus
+# 327.67 C / 32767% / corrupted magnet-flag reading.
+EYE_ERROR_SENTINEL = 32767
+
 # Teltonika IO ID lookup table (English parameter names), for everything
 # that ISN'T one of the per-slot EYE fields above.
 IO_NAMES = {
@@ -307,6 +314,12 @@ def translate_io_values(io_data):
     for io_id, raw_val in io_data.items():
         # Convert raw values into their logical units
         if io_id in DISABLED_IO_IDS:
+            continue
+        elif io_id in EYE_SLOT_FIELDS and raw_val == EYE_ERROR_SENTINEL:
+            # 32767 (0x7FFF, int16 max) shows up on any EYE slot field when
+            # that reading failed (e.g. sensor briefly out of BLE range) -
+            # skip it rather than publish a bogus temperature/humidity/magnet
+            # value; the previous good reading stays cached downstream.
             continue
         elif io_id in (66, 26, 30, 10828):
             # Millivolts to volts (e.g. 11586 mV -> 11.586 V)
