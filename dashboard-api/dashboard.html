@@ -434,34 +434,6 @@
       </div>
     </div>
 
-    <div class="grid-2-even" style="margin-bottom:20px">
-      <div class="panel">
-        <h2>EYE anduri temperatuur</h2>
-        <p class="panel-sub">°C, kolm haakeriista andurit</p>
-        <div class="chart-box"><canvas id="chart-temp"></canvas></div>
-      </div>
-      <div class="panel">
-        <h2>EYE anduri niiskus</h2>
-        <p class="panel-sub">%, kolm haakeriista andurit</p>
-        <div class="chart-box"><canvas id="chart-hum"></canvas></div>
-      </div>
-    </div>
-
-    <div class="panel" style="margin-bottom:20px">
-      <h2>EYE andurite kokkuvõte</h2>
-      <p class="panel-sub">Valitud päeval mõõdetud vahemikud ja magneti oleku muutused</p>
-      <div style="overflow-x:auto">
-        <table class="eye-table">
-          <thead>
-            <tr>
-              <th>Andur</th><th>MAC</th><th>Temp. vahemik</th><th>Niiskuse vahemik</th><th>Aku</th><th>Magnet muutus</th><th>Praegu</th>
-            </tr>
-          </thead>
-          <tbody id="eye-table-body"></tbody>
-        </table>
-      </div>
-    </div>
-
     <footer class="foot">
       <span>Allikas: TimescaleDB <span class="mono">measurements</span> tabel (teltonika2mqtt gateway, FMC650) — live</span>
       <span id="gen-time" class="mono"></span>
@@ -606,9 +578,6 @@
     Object.values(charts).forEach((c) => { try { c.destroy(); } catch (e) {} });
   }
 
-  const eyeColors = { eye1: cv('--slot-1'), eye2: cv('--slot-2'), eye3: cv('--slot-3') };
-  const eyeLabels = { eye1: 'Slot 1', eye2: 'Slot 2', eye3: 'Slot 3' };
-
   function renderCharts(bundle) {
     if (typeof Chart === 'undefined') return;
     destroyCharts();
@@ -634,26 +603,6 @@
       options: baseLineOptions('')
     });
 
-    function eyeChart(key, canvasId, field, yLabel) {
-      const datasets = ['eye1', 'eye2', 'eye3'].map((k) =>
-        lineDataset(eyeLabels[k], bundle.eye[k][field], eyeColors[k])
-      );
-      charts[key] = new Chart(document.getElementById(canvasId), {
-        type: 'line',
-        data: { datasets },
-        options: baseLineOptions(yLabel, {
-          plugins: {
-            legend: {
-              display: true, position: 'bottom',
-              labels: { color: cv('--text-secondary'), boxWidth: 10, boxHeight: 10, usePointStyle: true, padding: 12, font: { size: 11 } }
-            },
-            tooltip: baseLineOptions().plugins.tooltip,
-          }
-        })
-      });
-    }
-    eyeChart('temp', 'chart-temp', 'temp', '°C');
-    eyeChart('hum', 'chart-hum', 'hum', '%');
   }
 
   function renderKpis(bundle) {
@@ -691,33 +640,6 @@
     }
   }
 
-  function renderEyeTable(bundle) {
-    const tbody = document.getElementById('eye-table-body');
-    while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
-    function td(builder) { const c = document.createElement('td'); builder(c); return c; }
-    ['eye1', 'eye2', 'eye3'].forEach((k) => {
-      const s = bundle.eyeStats[k];
-      if (!s || !s.mac) return;
-      const tr = document.createElement('tr');
-      tr.appendChild(td((c) => {
-        const dot = document.createElement('span');
-        dot.className = 'sensor-dot'; dot.style.background = eyeColors[k];
-        c.appendChild(dot); c.appendChild(document.createTextNode(eyeLabels[k]));
-      }));
-      tr.appendChild(td((c) => { c.className = 'mono'; c.textContent = s.mac; }));
-      tr.appendChild(td((c) => { c.className = 'mono'; c.textContent = (s.temp_min != null ? s.temp_min.toFixed(1) + '–' + s.temp_max.toFixed(1) + ' °C' : '–'); }));
-      tr.appendChild(td((c) => { c.className = 'mono'; c.textContent = (s.humidity_min != null ? s.humidity_min.toFixed(0) + '–' + s.humidity_max.toFixed(0) + ' %' : '–'); }));
-      tr.appendChild(td((c) => { c.className = 'mono'; c.textContent = (s.battery != null ? s.battery + ' %' : '–'); }));
-      tr.appendChild(td((c) => { c.className = 'mono'; c.textContent = s.magnet_toggles + '×'; }));
-      tr.appendChild(td((c) => {
-        const pill = document.createElement('span');
-        pill.className = 'pill ' + (s.magnet_closed_now ? 'closed' : 'open');
-        pill.textContent = s.magnet_closed_now ? 'kinni' : 'lahti';
-        c.appendChild(pill);
-      }));
-      tbody.appendChild(tr);
-    });
-  }
 
   function renderRoute(bundle) {
     const pts = bundle.route;
@@ -795,7 +717,6 @@
   function renderDashboard(bundle) {
     safe('kpis', () => renderKpis(bundle));
     safe('charts', () => renderCharts(bundle));
-    safe('eye table', () => renderEyeTable(bundle));
     safe('route', () => renderRoute(bundle));
     document.getElementById('gen-time').textContent = 'Laaditud ' + new Date().toLocaleString('et-EE', { timeZone: TZ });
     document.getElementById('status-msg').hidden = true;
