@@ -488,6 +488,12 @@
       </div>
     </div>
 
+    <div class="panel" style="margin-bottom:20px">
+      <h2>Magneti olek ajas</h2>
+      <p class="panel-sub">Kinni/lahti, katkestus näitab traktori vahetust või andmelünka</p>
+      <div class="chart-box short"><canvas id="chart-mac-magnet"></canvas></div>
+    </div>
+
     <footer class="foot">
       <span>Allikas: TimescaleDB <span class="mono">measurements</span> tabel — täisajalugu, kõik traktorid</span>
       <span id="mac-gen-time" class="mono"></span>
@@ -895,6 +901,37 @@
         type: 'line',
         data: { datasets: [lineDataset('Niiskus', bundle.series.hum, cv('--slot-3'))] },
         options: baseLineOptions('%')
+      });
+
+      const magnetDataset = Object.assign(
+        lineDataset('Magnet', bundle.series.magnet, cv('--slot-2')),
+        { stepped: true, fill: true, backgroundColor: cv('--slot-2') + '1a' }
+      );
+      macCharts.magnet = new Chart(document.getElementById('chart-mac-magnet'), {
+        type: 'line',
+        data: { datasets: [magnetDataset] },
+        options: baseLineOptions('', {
+          scales: {
+            y: {
+              grid: { color: cv('--grid-line') },
+              ticks: {
+                color: cv('--text-muted'),
+                stepSize: 1,
+                callback: (v) => (v === 1 ? 'Kinni' : v === 0 ? 'Lahti' : ''),
+              },
+              min: -0.2, max: 1.2,
+            }
+          },
+          plugins: {
+            legend: { display: false },
+            tooltip: Object.assign({}, baseLineOptions().plugins.tooltip, {
+              callbacks: {
+                title: (items) => items.length ? fmtTime(items[0].parsed.x) : '',
+                label: (item) => item.parsed.y === 1 ? 'Kinni' : item.parsed.y === 0 ? 'Lahti' : '',
+              }
+            })
+          }
+        })
       });
     });
 

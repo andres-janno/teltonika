@@ -350,7 +350,11 @@ def build_mac_usage(mac):
         return pts
 
     rows_ds = downsample(rows, 500)
-    series = {"temp": to_xy(rows_ds, "temp"), "hum": to_xy(rows_ds, "humidity")}
+    series = {
+        "temp": to_xy(rows_ds, "temp"),
+        "hum": to_xy(rows_ds, "humidity"),
+        "magnet": to_xy(rows_ds, "magnet_closed"),  # bool -> 1.0 (kinni) / 0.0 (lahti)
+    }
 
     return {"stats": stats, "sightings": sightings, "series": series}
 
