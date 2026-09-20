@@ -147,6 +147,19 @@
   .view-toggle button + button { border-left: 1px solid var(--border); }
   .view-toggle button.active { background: var(--accent); color: var(--accent-ink); }
 
+  .refresh-btn {
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 13px;
+    font-weight: 500;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface-1);
+    color: var(--text-secondary);
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  .refresh-btn:hover { color: var(--text-primary); }
+
   .sightings-table-wrap { overflow-x: auto; margin-top: 4px; }
 
   .status-msg {
@@ -329,6 +342,7 @@
         <select id="mac-picker"></select>
       </div>
       <div class="meta mono" id="date-range">—</div>
+      <button type="button" id="refresh-btn" class="refresh-btn" title="Värskenda andmed">↻ Värskenda</button>
     </div>
   </header>
 
@@ -785,17 +799,19 @@
     document.getElementById('attachment-content').hidden = true;
   }
 
-  async function loadDashboard(imei, dateStr) {
-    showStatus('Laadin andmeid…', false);
+  async function loadDashboard(imei, dateStr, silent) {
+    currentImei = imei;
+    currentDate = dateStr;
+    if (!silent) showStatus('Laadin andmeid…', false);
     try {
       const url = '/api/dashboard?imei=' + encodeURIComponent(imei) + '&date=' + encodeURIComponent(dateStr);
       const res = await fetch(url);
       if (res.status === 404) {
-        showStatus('Selle päeva kohta andmeid ei leitud.', false);
+        if (!silent) showStatus('Selle päeva kohta andmeid ei leitud.', false);
         return;
       }
       if (!res.ok) {
-        showStatus('Andmete laadimine ebaõnnestus (HTTP ' + res.status + ').', true);
+        if (!silent) showStatus('Andmete laadimine ebaõnnestus (HTTP ' + res.status + ').', true);
         return;
       }
       const bundle = await res.json();
@@ -803,7 +819,7 @@
       renderDashboard(bundle);
     } catch (e) {
       console.error('[dashboard] load failed:', e);
-      showStatus('Andmete laadimine ebaõnnestus — kontrolli API ühendust.', true);
+      if (!silent) showStatus('Andmete laadimine ebaõnnestus — kontrolli API ühendust.', true);
     }
   }
 
@@ -949,23 +965,24 @@
     document.getElementById('attachment-content').hidden = false;
   }
 
-  async function loadMacUsage(mac) {
-    showStatus('Laadin andmeid…', false);
+  async function loadMacUsage(mac, silent) {
+    currentMac = mac;
+    if (!silent) showStatus('Laadin andmeid…', false);
     try {
       const res = await fetch('/api/mac-usage?mac=' + encodeURIComponent(mac));
       if (res.status === 404) {
-        showStatus('Selle MAC-i kohta andmeid ei leitud.', false);
+        if (!silent) showStatus('Selle MAC-i kohta andmeid ei leitud.', false);
         return;
       }
       if (!res.ok) {
-        showStatus('Andmete laadimine ebaõnnestus (HTTP ' + res.status + ').', true);
+        if (!silent) showStatus('Andmete laadimine ebaõnnestus (HTTP ' + res.status + ').', true);
         return;
       }
       const bundle = await res.json();
       renderMacUsage(bundle);
     } catch (e) {
       console.error('[dashboard] mac load failed:', e);
-      showStatus('Andmete laadimine ebaõnnestus — kontrolli API ühendust.', true);
+      if (!silent) showStatus('Andmete laadimine ebaõnnestus — kontrolli API ühendust.', true);
     }
   }
 
@@ -997,8 +1014,11 @@
   // --- View toggle ---
   let vehicleInitialized = false;
   let attachmentInitialized = false;
+  let currentView = 'vehicle';
+  let currentImei = null, currentDate = null, currentMac = null;
 
   function switchView(view) {
+    currentView = view;
     document.querySelectorAll('.view-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
     document.getElementById('vehicle-controls').hidden = view !== 'vehicle';
     document.getElementById('attachment-controls').hidden = view !== 'attachment';
@@ -1027,6 +1047,16 @@
   document.querySelectorAll('.view-btn').forEach((btn) => {
     btn.addEventListener('click', () => switchView(btn.dataset.view));
   });
+
+  function refreshCurrent() {
+    if (currentView === 'vehicle') {
+      if (currentImei && currentDate) loadDashboard(currentImei, currentDate, true);
+    } else {
+      if (currentMac) loadMacUsage(currentMac, true);
+    }
+  }
+  document.getElementById('refresh-btn').addEventListener('click', refreshCurrent);
+  setInterval(refreshCurrent, 30000);
 
   initVehicle();
 })();
