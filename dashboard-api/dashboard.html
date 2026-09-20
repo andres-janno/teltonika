@@ -105,11 +105,18 @@
     color: var(--text-secondary);
   }
   header.top .meta .mono { color: var(--text-primary); }
+  [hidden] { display: none !important; }
+
   .header-right {
     display: flex;
     align-items: center;
     gap: 10px;
     flex-wrap: wrap;
+  }
+  .control-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
   }
   #date-picker, #imei-picker, #mac-picker {
     font-family: 'IBM Plex Mono', monospace;
@@ -314,11 +321,11 @@
         <button type="button" class="view-btn active" data-view="vehicle">Sõiduk</button>
         <button type="button" class="view-btn" data-view="attachment">Haakeriist</button>
       </div>
-      <div id="vehicle-controls" style="display:flex; gap:10px">
+      <div id="vehicle-controls" class="control-group">
         <select id="imei-picker"></select>
         <select id="date-picker"></select>
       </div>
-      <div id="attachment-controls" hidden style="display:flex; gap:10px">
+      <div id="attachment-controls" class="control-group" hidden>
         <select id="mac-picker"></select>
       </div>
       <div class="meta mono" id="date-range">—</div>
