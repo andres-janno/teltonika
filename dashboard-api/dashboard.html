@@ -159,6 +159,18 @@
     cursor: pointer;
   }
   .refresh-btn:hover { color: var(--text-primary); }
+  .refresh-btn:disabled { cursor: default; opacity: 0.7; }
+  #refresh-icon { display: inline-block; }
+  #refresh-icon.spinning {
+    animation: refresh-spin 0.7s linear infinite;
+  }
+  @keyframes refresh-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #refresh-icon.spinning { animation: none; }
+  }
 
   .sightings-table-wrap { overflow-x: auto; margin-top: 4px; }
 
@@ -342,7 +354,7 @@
         <select id="mac-picker"></select>
       </div>
       <div class="meta mono" id="date-range">—</div>
-      <button type="button" id="refresh-btn" class="refresh-btn" title="Värskenda andmed">↻ Värskenda</button>
+      <button type="button" id="refresh-btn" class="refresh-btn" title="Värskenda andmed"><span id="refresh-icon">↻</span> Värskenda</button>
     </div>
   </header>
 
@@ -1048,11 +1060,23 @@
     btn.addEventListener('click', () => switchView(btn.dataset.view));
   });
 
-  function refreshCurrent() {
-    if (currentView === 'vehicle') {
-      if (currentImei && currentDate) loadDashboard(currentImei, currentDate, true);
-    } else {
-      if (currentMac) loadMacUsage(currentMac, true);
+  async function refreshCurrent() {
+    const btn = document.getElementById('refresh-btn');
+    const icon = document.getElementById('refresh-icon');
+    btn.disabled = true;
+    icon.classList.add('spinning');
+    try {
+      if (currentView === 'vehicle') {
+        if (currentImei && currentDate) await loadDashboard(currentImei, currentDate, true);
+      } else {
+        if (currentMac) await loadMacUsage(currentMac, true);
+      }
+      // Keep the spin visible for a moment even on very fast responses,
+      // so a click always reads as "something happened".
+      await new Promise((r) => setTimeout(r, 350));
+    } finally {
+      icon.classList.remove('spinning');
+      btn.disabled = false;
     }
   }
   document.getElementById('refresh-btn').addEventListener('click', refreshCurrent);
