@@ -504,17 +504,19 @@ async def handle_teltonika(reader, writer):
                     slot_macs = resolve_slot_macs(imei, eye_raw_io)
 
                     for slot in EYE_SLOTS:
+                        if not eye_slot_values[slot]:
+                            # Nothing fresh for this slot in THIS record -
+                            # eye_raw_io being non-empty only means some
+                            # slot (or the beacon subsystem) reported
+                            # something, not this one. Skip instead of
+                            # republishing the cached snapshot again - that
+                            # was flooding the DB with a wall of identical
+                            # rows that never actually reflected a new
+                            # reading.
+                            continue
+
                         merged = last_seen_eye_values.setdefault((imei, slot), {})
                         merged.update(eye_slot_values[slot])
-
-                        if not merged:
-                            # No real reading ever confirmed for this slot
-                            # (or the last one was cleared as a disconnected-
-                            # sensor zero) - skip publishing/storing a
-                            # mac-only record every cycle just because the
-                            # MAC itself is known from beacon detection or
-                            # the static config file.
-                            continue
 
                         eye_rec = {
                             "timestamp": rec["timestamp"],
