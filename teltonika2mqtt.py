@@ -4,6 +4,7 @@ import os
 import struct
 import json
 import datetime
+import math
 import paho.mqtt.client as mqtt
 
 MQTT_BROKER = "127.0.0.1"
@@ -27,6 +28,73 @@ def is_duplicate_record(imei, ts_ms):
     if len(seen) > RECENT_TIMESTAMPS_PER_IMEI:
         seen.popitem(last=False)
     return False
+
+# GPS glitch filter: bogus fixes (e.g. a single spike or position jumping far away)
+# otherwise end up in the DB and draw spikes on the route / inflate distance.
+# A fix is an initial glitch candidate if it is further from the last accepted fix
+# than the vehicle could have travelled at its reported speed (+ margin) in the elapsed time.
+# If a new position is confirmed by a consecutive reading (within 30s), it is accepted
+# immediately rather than locking the filter out. If no fix has been accepted for
+# GLITCH_RESET_S, the new position is also accepted unconditionally.
+GLITCH_BASE_M = 30
+GLITCH_SPEED_MARGIN_KMH = 20
+GLITCH_RESET_S = 60
+last_good_fix = {}      # imei -> (ts_s, lat, lon, speed_kmh)
+glitch_candidate = {}   # imei -> (ts_s, lat, lon, speed_kmh)
+
+def _haversine_m(lat1, lon1, lat2, lon2):
+    R = 6371000
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlmb = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
+def is_gps_glitch(imei, ts_ms, lat, lon, speed_kmh):
+    """True if this fix is physically implausible vs the last accepted one.
+    Updates the per-IMEI state; no-fix (0,0) readings are left alone."""
+    if lat == 0 and lon == 0:
+        return False
+    t_s = ts_ms / 1000
+    speed_kmh = speed_kmh or 0
+    prev = last_good_fix.get(imei)
+    if not prev:
+        last_good_fix[imei] = (t_s, lat, lon, speed_kmh)
+        glitch_candidate.pop(imei, None)
+        return False
+
+    dt = t_s - prev[0]
+    # Clock jumped backwards or no accepted fix for GLITCH_RESET_S -> accept unconditionally
+    if dt <= 0 or dt > GLITCH_RESET_S:
+        last_good_fix[imei] = (t_s, lat, lon, speed_kmh)
+        glitch_candidate.pop(imei, None)
+        return False
+
+    v_ms = (max(speed_kmh, prev[3]) + GLITCH_SPEED_MARGIN_KMH) / 3.6
+    dist = _haversine_m(prev[1], prev[2], lat, lon)
+    if dist <= GLITCH_BASE_M + v_ms * dt:
+        last_good_fix[imei] = (t_s, lat, lon, speed_kmh)
+        glitch_candidate.pop(imei, None)
+        return False
+
+    # Implausible against last_good_fix: check if this confirms an active candidate
+    cand = glitch_candidate.get(imei)
+    if cand:
+        cand_ts, cand_lat, cand_lon, cand_spd = cand
+        dt_cand = t_s - cand_ts
+        if 0 <= dt_cand <= 30:
+            cand_v_ms = (max(speed_kmh, cand_spd) + GLITCH_SPEED_MARGIN_KMH) / 3.6
+            cand_dist = _haversine_m(cand_lat, cand_lon, lat, lon)
+            if cand_dist <= GLITCH_BASE_M + cand_v_ms * max(dt_cand, 1):
+                # Confirmed new position by consecutive reading -> accept immediately
+                last_good_fix[imei] = (t_s, lat, lon, speed_kmh)
+                glitch_candidate.pop(imei, None)
+                return False
+
+    # Not yet confirmed: record candidate and reject this single fix
+    glitch_candidate[imei] = (t_s, lat, lon, speed_kmh)
+    return True
+
 
 # FMC650 Bluetooth 4.0 supports up to 4 paired sensor slots.
 MAX_EYE_SLOTS = 4
@@ -121,6 +189,24 @@ EYE_SLOT_FIELDS = {
     708: (4, "eye_battery_percent"),      # %, extrapolated - unconfirmed
     712: (4, "eye_humidity_percent"),     # %, extrapolated - unconfirmed
     716: (4, "eye_magnet_closed"),        # bool, bit 3, extrapolated - unconfirmed
+
+    # FMC125 "EYE Sensor by MAC #N" (connectionless) uses a different ID
+    # range, same "base + (slot - 1)" layout. Slot 1 inferred from live data
+    # (10800=1689 -> 16.89 C, 10804=56 -> 56 %RH, 10808=1 -> magnet); slots
+    # 2-4 extrapolated from the pattern and unconfirmed. Battery not mapped.
+    10800: (1, "eye_temperature_c"),      # x100 C
+    10801: (2, "eye_temperature_c"),
+    10802: (3, "eye_temperature_c"),
+    10803: (4, "eye_temperature_c"),
+    10804: (1, "eye_humidity_percent"),   # %
+    10805: (2, "eye_humidity_percent"),
+    10806: (3, "eye_humidity_percent"),
+    10807: (4, "eye_humidity_percent"),
+    10808: (1, "eye_magnet_closed"),      # plain 0/1
+    10809: (2, "eye_magnet_closed"),
+    10810: (3, "eye_magnet_closed"),
+    10811: (4, "eye_magnet_closed"),
+    10824: (1, "eye_battery_v"),         # mV -> V, slot 1 only (observed 3040); other slots unknown
 }
 
 # IO IDs deliberately not published at all: internal backup battery
@@ -163,6 +249,14 @@ IO_NAMES = {
     239: "ignition",               # bool
     240: "movement",               # bool
     241: "gsm_operator_code",
+
+    # Engine data
+    85: "engine_load_percent",     # %
+    88: "engine_rpm",              # rpm
+    135: "fuel_rate_lph",          # l/h
+    104: "engine_total_hours_h",   # h (FMS: Engine Total Hours Of Operation)
+    127: "engine_coolant_temp_c",  # C (FMS: Engine Coolant Temperature)
+    80: "can_speed_kmh",          # km/h - empirically tracks speed_avl_kmh (corr 0.97, never lower, typically +0..2); not Data Mode
 
     # Teltonika EYE Sensor / BLE Sensor 1
     25: "eye_1_temperature",        # x10 C
@@ -333,7 +427,7 @@ def translate_io_values(io_data):
             # skip it rather than publish a bogus temperature/humidity/magnet
             # value; the previous good reading stays cached downstream.
             continue
-        elif io_id in (66, 26, 30, 10828):
+        elif io_id in (66, 26, 30, 10828, 10824):
             # Millivolts to volts (e.g. 11586 mV -> 11.586 V)
             val = round(raw_val / 1000.0, 3)
         elif io_id in (239, 240):
@@ -342,9 +436,12 @@ def translate_io_values(io_data):
         elif io_id in (25, 29):
             # EYE sensor temperature (often scaled by 10 or 100)
             val = raw_val / 10.0 if abs(raw_val) > 200 else raw_val
-        elif io_id in (701, 702, 703, 704, 10826):
+        elif io_id in (701, 702, 703, 704, 10800, 10801, 10802, 10803, 10826):
             # EYE temperature (0.01 C step)
             val = round(raw_val / 100.0, 2)
+        elif io_id in (10808, 10809, 10810, 10811):
+            # FMC125 EYE magnet state, plain boolean
+            val = bool(raw_val)
         elif io_id == 10827:
             # Codec 8 Extended EYE humidity (0.01 % step)
             val = round(raw_val / 100.0, 2)
@@ -483,15 +580,21 @@ async def handle_teltonika(reader, writer):
 
                 # Flat payload (no nested objects) so each key maps directly
                 # to a TimescaleDB column/field.
+                eff_speed = max(rec.get("speed") or 0, fmc_values.get("can_speed_kmh") or 0, fmc_values.get("speed_avl_kmh") or 0)
+                glitch = is_gps_glitch(imei, rec["timestamp"], rec["latitude"], rec["longitude"], eff_speed)
+                if glitch:
+                    print(f"[!] GPS glitch dropped ({imei}): {rec['latitude']}, {rec['longitude']} @ {rec['datetime']}")
                 fmc_rec = {
                     "timestamp": rec["timestamp"],
                     "datetime": rec["datetime"],
                     # "codec": rec["codec"],  # disabled - keeping the payload as small as possible
                     # "priority": rec["priority"],  # disabled - keeping the payload as small as possible
-                    "latitude": rec["latitude"],
-                    "longitude": rec["longitude"],
-                    "altitude": rec["altitude"],
-                    "angle": rec["angle"],
+                    **({} if glitch else {
+                        "latitude": rec["latitude"],
+                        "longitude": rec["longitude"],
+                        "altitude": rec["altitude"],
+                        "angle": rec["angle"],
+                    }),
                     "satellites": rec["satellites"],
                     "speed": rec["speed"],
                     **fmc_values

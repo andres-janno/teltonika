@@ -9,7 +9,7 @@ from flask import Flask, jsonify, request
 
 DB_DSN = os.environ.get(
     "TELTONIKA_DB_DSN",
-    "dbname=agro_tsdb user=teltonika_api password=CHANGE_ME host=127.0.0.1",
+    "dbname=telemetry_tsdb user=teltonika_api password=CHANGE_ME host=127.0.0.1",
 )
 TZ = ZoneInfo("Europe/Tallinn")
 GAP_S = 900  # seconds - any inter-record gap longer than this is excluded from
@@ -29,6 +29,17 @@ def haversine(lat1, lon1, lat2, lon2):
     dlambda = math.radians(lon2 - lon1)
     a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlambda / 2) ** 2
     return 2 * R * math.asin(math.sqrt(a))
+
+
+# GPS glitch detection (keep in sync with teltonika2mqtt.py): a fix is
+# an initial glitch candidate if it is further from the last accepted fix
+# than the vehicle could have travelled at its reported speed (+ margin) in the elapsed time.
+# If a new position is confirmed by a consecutive reading (within 30s), it is accepted
+# immediately rather than locking the filter out. If no fix has been accepted for
+# GLITCH_RESET_S, the new position is also accepted unconditionally.
+GLITCH_BASE_M = 30
+GLITCH_SPEED_MARGIN_KMH = 20
+GLITCH_RESET_S = 60
 
 
 def downsample(rows, target=380):
@@ -62,7 +73,11 @@ SELECT
   MAX(CASE WHEN field='satellites' THEN value_bigint END) AS satellites,
   MAX(CASE WHEN field='gnss_hdop' THEN value_bigint END) AS hdop,
   MAX(CASE WHEN field='gnss_pdop' THEN value_bigint END) AS pdop,
-  MAX(CASE WHEN field='gsm_signal_level' THEN value_bigint END) AS gsm
+  MAX(CASE WHEN field='gsm_signal_level' THEN value_bigint END) AS gsm,
+  MAX(CASE WHEN field='engine_rpm' THEN COALESCE(value_double, value_bigint) END) AS rpm,
+  MAX(CASE WHEN field='fuel_rate_lph' THEN COALESCE(value_double, value_bigint) END) AS fuel_rate,
+  MAX(CASE WHEN field='engine_load_percent' THEN COALESCE(value_double, value_bigint) END) AS engine_load,
+  MAX(CASE WHEN field='can_speed_kmh' THEN COALESCE(value_double, value_bigint) END) AS can_speed
 FROM measurements
 WHERE measurement='data' AND device=%s AND time >= %s AND time < %s
 GROUP BY time ORDER BY time
@@ -74,6 +89,7 @@ SELECT
   MAX(CASE WHEN field='eye_temperature_c' THEN value_double END) AS temp,
   MAX(CASE WHEN field='eye_humidity_percent' THEN value_bigint END) AS humidity,
   MAX(CASE WHEN field='eye_battery_percent' THEN value_bigint END) AS battery,
+  MAX(CASE WHEN field='eye_battery_v' THEN value_double END) AS battery_v,
   BOOL_OR(CASE WHEN field='eye_magnet_closed' THEN value_bool END) AS magnet_closed,
   MAX(CASE WHEN field='mac' THEN value_text END) AS mac
 FROM measurements
@@ -120,6 +136,7 @@ SELECT k.device, k.measurement, k.time,
   MAX(CASE WHEN m.field='eye_temperature_c' THEN m.value_double END) AS temp,
   MAX(CASE WHEN m.field='eye_humidity_percent' THEN m.value_bigint END) AS humidity,
   MAX(CASE WHEN m.field='eye_battery_percent' THEN m.value_bigint END) AS battery,
+  MAX(CASE WHEN m.field='eye_battery_v' THEN m.value_double END) AS battery_v,
   BOOL_OR(CASE WHEN m.field='eye_magnet_closed' THEN m.value_bool END) AS magnet_closed
 FROM mac_keys k
 JOIN measurements m ON m.device = k.device AND m.measurement = k.measurement AND m.time = k.time
@@ -167,11 +184,61 @@ def build_dashboard_range(imei, start_utc, end_utc):
 
     for r in data_rows:
         r["spd"] = float(r["speed"]) if r["speed"] is not None else 0.0
+        if r.get("can_speed") is not None:
+            r["spd"] = max(r["spd"], float(r["can_speed"]))
+
+    # Flag GPS glitches once; used for distance and route.
+    last_good = None
+    cand = None
+    for r in data_rows:
+        r["gps_ok"] = False
+        if r["latitude"] is None or r["longitude"] is None:
+            continue
+        t_s = r["time"].timestamp()
+        lat, lon, spd = r["latitude"], r["longitude"], r["spd"]
+
+        if last_good is None:
+            r["gps_ok"] = True
+            last_good = (t_s, lat, lon, spd)
+            cand = None
+            continue
+
+        dt = t_s - last_good[0]
+        if dt <= 0 or dt > GLITCH_RESET_S:
+            r["gps_ok"] = True
+            last_good = (t_s, lat, lon, spd)
+            cand = None
+            continue
+
+        v_ms = (max(spd, last_good[3]) + GLITCH_SPEED_MARGIN_KMH) / 3.6
+        dist = haversine(last_good[1], last_good[2], lat, lon)
+        if dist <= GLITCH_BASE_M + v_ms * dt:
+            r["gps_ok"] = True
+            last_good = (t_s, lat, lon, spd)
+            cand = None
+            continue
+
+        # Check candidate confirmation
+        if cand is not None:
+            cand_ts, cand_lat, cand_lon, cand_spd = cand
+            dt_cand = t_s - cand_ts
+            if 0 <= dt_cand <= 30:
+                cand_v_ms = (max(spd, cand_spd) + GLITCH_SPEED_MARGIN_KMH) / 3.6
+                cand_dist = haversine(cand_lat, cand_lon, lat, lon)
+                if cand_dist <= GLITCH_BASE_M + cand_v_ms * max(dt_cand, 1):
+                    # Confirmed new position by consecutive reading
+                    r["gps_ok"] = True
+                    last_good = (t_s, lat, lon, spd)
+                    cand = None
+                    continue
+
+        cand = (t_s, lat, lon, spd)
 
     gaps = []
     total_dist_m = 0.0
     moving_seconds = 0.0
     max_speed = 0.0
+    last_pos = None
     for i in range(1, len(data_rows)):
         a, b = data_rows[i - 1], data_rows[i]
         dt_s = (b["time"] - a["time"]).total_seconds()
@@ -181,9 +248,12 @@ def build_dashboard_range(imei, start_utc, end_utc):
                 "to": b["time"].isoformat(),
                 "minutes": round(dt_s / 60, 1),
             })
+            last_pos = None
             continue
-        if a["latitude"] is not None and b["latitude"] is not None:
-            total_dist_m += haversine(a["latitude"], a["longitude"], b["latitude"], b["longitude"])
+        if b["gps_ok"]:
+            if last_pos is not None:
+                total_dist_m += haversine(last_pos["latitude"], last_pos["longitude"], b["latitude"], b["longitude"])
+            last_pos = b
         if b["movement"]:
             moving_seconds += dt_s
         max_speed = max(max_speed, b["spd"])
@@ -240,11 +310,14 @@ def build_dashboard_range(imei, start_utc, end_utc):
         "volt": to_xy(data_ds, "voltage"),
         "sat": to_xy(data_ds, "satellites"),
         "hdop": to_xy(data_ds, "hdop"),
+        "rpm": to_xy(data_ds, "rpm"),
+        "fuel": to_xy(data_ds, "fuel_rate"),
+        "load": to_xy(data_ds, "engine_load"),
     }
 
     route_pts = [
         {"lat": r["latitude"], "lon": r["longitude"], "t": int(r["time"].timestamp() * 1000)}
-        for r in data_rows if r["latitude"] is not None and r["longitude"] is not None
+        for r in data_rows if r["gps_ok"]
     ]
     route = downsample(route_pts, 600)
 
@@ -265,6 +338,7 @@ def build_dashboard_range(imei, start_utc, end_utc):
         temps = [r["temp"] for r in rows if r["temp"] is not None]
         hums = [r["humidity"] for r in rows if r["humidity"] is not None]
         batts = [r["battery"] for r in rows if r["battery"] is not None]
+        batts_v = [r["battery_v"] for r in rows if r["battery_v"] is not None]
         mac = next((r["mac"] for r in rows if r["mac"]), None)
 
         toggles = 0
@@ -283,6 +357,7 @@ def build_dashboard_range(imei, start_utc, end_utc):
             "humidity_min": min(hums) if hums else None,
             "humidity_max": max(hums) if hums else None,
             "battery": int(batts[-1]) if batts else None,
+            "battery_v": batts_v[-1] if batts_v else None,
             "magnet_toggles": toggles,
             "magnet_closed_now": prev,
         }
@@ -328,6 +403,7 @@ def build_mac_usage(mac, hours=None):
     temps = [r["temp"] for r in rows if r["temp"] is not None]
     hums = [r["humidity"] for r in rows if r["humidity"] is not None]
     batts = [r["battery"] for r in rows if r["battery"] is not None]
+    batts_v = [r["battery_v"] for r in rows if r["battery_v"] is not None]
 
     toggles = 0
     prev_magnet = None
@@ -352,6 +428,7 @@ def build_mac_usage(mac, hours=None):
         "humidity_min": min(hums) if hums else None,
         "humidity_max": max(hums) if hums else None,
         "battery": int(batts[-1]) if batts else None,
+        "battery_v": batts_v[-1] if batts_v else None,
         "magnet_toggles": toggles,
         "magnet_closed_now": prev_magnet,
     }

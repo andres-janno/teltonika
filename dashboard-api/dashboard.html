@@ -279,8 +279,22 @@
     width: 100%;
     height: auto;
     display: block;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
   }
-  .route-wrap { border-radius: 8px; overflow: hidden; background: var(--surface-2); }
+  #route-svg.panning { cursor: grabbing; }
+  .route-wrap { border-radius: 8px; overflow: hidden; background: var(--surface-2); position: relative; }
+  .route-zoom {
+    position: absolute; top: 8px; right: 8px;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .route-zoom button {
+    width: 28px; height: 28px; border-radius: 6px;
+    border: 1px solid var(--grid-line); background: var(--surface-1);
+    color: inherit; font: inherit; font-size: 16px; line-height: 1; cursor: pointer;
+  }
+  .route-zoom button:hover { background: var(--surface-2); }
 
   table.eye-table {
     width: 100%;
@@ -416,6 +430,11 @@
         <p class="panel-sub">GPS-punktid (kaardikihte pole — puhas asukohajoonis).</p>
         <div class="route-wrap">
           <svg id="route-svg" viewBox="0 0 640 380" preserveAspectRatio="xMidYMid meet"></svg>
+          <div class="route-zoom">
+            <button type="button" id="route-zoom-in" title="Suurenda" aria-label="Suurenda">+</button>
+            <button type="button" id="route-zoom-out" title="Vähenda" aria-label="Vähenda">−</button>
+            <button type="button" id="route-zoom-reset" title="Lähtesta" aria-label="Lähtesta">⟲</button>
+          </div>
         </div>
         <div class="legend-row" id="route-legend"></div>
       </div>
@@ -443,6 +462,23 @@
           <div class="chart-box short"><canvas id="chart-hdop"></canvas></div>
         </div>
       </div>
+    </div>
+
+    <div class="panel" id="engine-panel" style="margin-bottom:20px">
+      <h2>Mootor</h2>
+      <p class="panel-sub">Pöörded, kütusekulu ja koormus (CAN/OBD andmed, kui seade neid saadab)</p>
+      <div class="grid-2-even">
+        <div>
+          <div class="panel-sub" style="margin-bottom:4px">Mootori pöörded (rpm)</div>
+          <div class="chart-box short"><canvas id="chart-rpm"></canvas></div>
+        </div>
+        <div>
+          <div class="panel-sub" style="margin-bottom:4px">Kütusekulu (l/h)</div>
+          <div class="chart-box short"><canvas id="chart-fuel"></canvas></div>
+        </div>
+      </div>
+      <div class="panel-sub" style="margin:12px 0 4px">Mootori koormus (%)</div>
+      <div class="chart-box short"><canvas id="chart-load"></canvas></div>
     </div>
 
     <footer class="foot">
@@ -614,6 +650,26 @@
       options: baseLineOptions('')
     });
 
+    const hasEngine = ['rpm', 'fuel', 'load'].some((k) => (bundle.series[k] || []).some((p) => p.y != null));
+    document.getElementById('engine-panel').style.display = hasEngine ? '' : 'none';
+    if (hasEngine) {
+      charts.rpm = new Chart(document.getElementById('chart-rpm'), {
+        type: 'line',
+        data: { datasets: [lineDataset('Pöörded', bundle.series.rpm, cv('--slot-1'))] },
+        options: baseLineOptions('rpm')
+      });
+      charts.fuel = new Chart(document.getElementById('chart-fuel'), {
+        type: 'line',
+        data: { datasets: [lineDataset('Kütusekulu', bundle.series.fuel, cv('--slot-2'))] },
+        options: baseLineOptions('l/h')
+      });
+      charts.load = new Chart(document.getElementById('chart-load'), {
+        type: 'line',
+        data: { datasets: [lineDataset('Koormus', bundle.series.load, cv('--slot-3'))] },
+        options: baseLineOptions('%')
+      });
+    }
+
   }
 
   function renderKpis(bundle) {
@@ -652,6 +708,8 @@
   }
 
 
+  let routeZoomState = { k: 1, tx: 0, ty: 0 };
+
   function renderRoute(bundle) {
     const pts = bundle.route;
     const svg = document.getElementById('route-svg');
@@ -687,12 +745,22 @@
       return [x, y];
     }
 
-    const GAP_MS = 15 * 60 * 1000;
-    const segments = [[pts[0]]];
-    for (let i = 1; i < pts.length; i++) {
-      if (pts[i].t - pts[i - 1].t > GAP_MS) segments.push([]);
-      segments[segments.length - 1].push(pts[i]);
+    function distM(p1, p2) {
+      const dlat = (p2.lat - p1.lat) * 111320;
+      const dlon = (p2.lon - p1.lon) * 111320 * lonScale;
+      return Math.sqrt(dlat * dlat + dlon * dlon);
     }
+
+    const GAP_MS = 15 * 60 * 1000;
+    const MAX_STEP_M = 400;
+    const rawSegments = [[pts[0]]];
+    for (let i = 1; i < pts.length; i++) {
+      if (pts[i].t - pts[i - 1].t > GAP_MS || distM(pts[i - 1], pts[i]) > MAX_STEP_M) {
+        rawSegments.push([]);
+      }
+      rawSegments[rawSegments.length - 1].push(pts[i]);
+    }
+    const segments = rawSegments.filter(s => s.length >= 2);
 
     const segColors = [cv('--slot-1'), cv('--slot-2'), cv('--slot-3')];
 
@@ -700,6 +768,9 @@
       const y = PAD + i * (H - 2 * PAD) / 4;
       svg.appendChild(el('line', { x1: PAD, y1: y, x2: W - PAD, y2: y, stroke: cv('--grid-line'), 'stroke-width': 1 }));
     }
+    const g = el('g', {});
+    svg.appendChild(g);
+    const markers = [];
     segments.forEach((seg, si) => {
       if (seg.length < 2) return;
       const color = segColors[si % segColors.length];
@@ -707,11 +778,13 @@
         const [x, y] = project(p.lat, p.lon);
         return (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1);
       }).join(' ');
-      svg.appendChild(el('path', { d, fill: 'none', stroke: color, 'stroke-width': 2.5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+      g.appendChild(el('path', { d, fill: 'none', stroke: color, 'stroke-width': 2.5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'vector-effect': 'non-scaling-stroke' }));
       const [sx, sy] = project(seg[0].lat, seg[0].lon);
       const [ex, ey] = project(seg[seg.length - 1].lat, seg[seg.length - 1].lon);
-      svg.appendChild(el('circle', { cx: sx, cy: sy, r: 5, fill: cv('--surface-1'), stroke: color, 'stroke-width': 2 }));
-      svg.appendChild(el('circle', { cx: ex, cy: ey, r: 4, fill: color }));
+      const c1 = el('circle', { cx: sx, cy: sy, r: 5, fill: cv('--surface-1'), stroke: color, 'stroke-width': 2, 'vector-effect': 'non-scaling-stroke' });
+      const c2 = el('circle', { cx: ex, cy: ey, r: 4, fill: color });
+      g.appendChild(c1); g.appendChild(c2);
+      markers.push([c1, 5], [c2, 4]);
 
       const item = document.createElement('span');
       item.className = 'item';
@@ -723,6 +796,59 @@
       ));
       legend.appendChild(item);
     });
+
+    // Zoom / pan state (view transform applied to <g>)
+    let { k, tx, ty } = routeZoomState;
+    const MIN_K = 1, MAX_K = 60;
+    function apply() {
+      // keep the content from being panned fully out of view
+      tx = Math.min(0, Math.max(W - W * k, tx));
+      ty = Math.min(0, Math.max(H - H * k, ty));
+      routeZoomState = { k, tx, ty };
+      g.setAttribute('transform', 'translate(' + tx + ',' + ty + ') scale(' + k + ')');
+      markers.forEach(([c, r]) => c.setAttribute('r', r / k));
+    }
+    function toSvg(evt) {
+      const r = svg.getBoundingClientRect();
+      return [(evt.clientX - r.left) * W / r.width, (evt.clientY - r.top) * H / r.height];
+    }
+    function zoomAt(px, py, factor) {
+      const nk = Math.min(MAX_K, Math.max(MIN_K, k * factor));
+      const f = nk / k;
+      tx = px - (px - tx) * f;
+      ty = py - (py - ty) * f;
+      k = nk;
+      apply();
+    }
+    svg.onwheel = (e) => {
+      e.preventDefault();
+      const [px, py] = toSvg(e);
+      zoomAt(px, py, e.deltaY < 0 ? 1.25 : 1 / 1.25);
+    };
+    svg.ondblclick = (e) => {
+      const [px, py] = toSvg(e);
+      zoomAt(px, py, 2);
+    };
+    let drag = null;
+    svg.onpointerdown = (e) => {
+      drag = { x: e.clientX, y: e.clientY, tx, ty };
+      svg.setPointerCapture(e.pointerId);
+      svg.classList.add('panning');
+    };
+    svg.onpointermove = (e) => {
+      if (!drag) return;
+      const r = svg.getBoundingClientRect();
+      tx = drag.tx + (e.clientX - drag.x) * W / r.width;
+      ty = drag.ty + (e.clientY - drag.y) * H / r.height;
+      apply();
+    };
+    const endDrag = () => { drag = null; svg.classList.remove('panning'); };
+    svg.onpointerup = endDrag;
+    svg.onpointercancel = endDrag;
+    document.getElementById('route-zoom-in').onclick = () => zoomAt(W / 2, H / 2, 1.5);
+    document.getElementById('route-zoom-out').onclick = () => zoomAt(W / 2, H / 2, 1 / 1.5);
+    document.getElementById('route-zoom-reset').onclick = () => { k = 1; tx = 0; ty = 0; apply(); };
+    apply();
   }
 
   function renderDashboard(bundle) {
@@ -744,14 +870,21 @@
   }
 
   async function loadDashboard(imei, opts, silent) {
-    currentImei = imei;
     if (opts && opts.hours) {
+      if (currentHours !== opts.hours || currentImei !== imei) {
+        routeZoomState = { k: 1, tx: 0, ty: 0 };
+      }
       currentHours = opts.hours;
       currentDate = null;
     } else {
-      currentDate = opts && opts.date;
+      const nextDate = opts && opts.date;
+      if (currentDate !== nextDate || currentImei !== imei || currentHours !== null) {
+        routeZoomState = { k: 1, tx: 0, ty: 0 };
+      }
+      currentDate = nextDate;
       currentHours = null;
     }
+    currentImei = imei;
     if (!silent) showStatus('Laadin andmeid…', false);
     try {
       const qs = currentHours ? 'hours=' + encodeURIComponent(currentHours) : 'date=' + encodeURIComponent(currentDate);
@@ -860,7 +993,9 @@
       document.getElementById('mac-kpi-temp').textContent = (s.temp_min != null ? s.temp_min.toFixed(1) + '–' + s.temp_max.toFixed(1) + ' °C' : '–');
       document.getElementById('mac-kpi-temp-avg').textContent = s.temp_avg != null ? 'keskmine ' + s.temp_avg.toFixed(1) + ' °C' : '';
       document.getElementById('mac-kpi-hum').textContent = (s.humidity_min != null ? s.humidity_min.toFixed(0) + '–' + s.humidity_max.toFixed(0) + ' %' : '–');
-      document.getElementById('mac-kpi-battery').textContent = s.battery != null ? s.battery + ' %' : '–';
+      document.getElementById('mac-kpi-battery').textContent =
+        s.battery != null ? s.battery + ' %' :
+        s.battery_v != null ? s.battery_v.toFixed(2) + ' V' : '–';
       document.getElementById('mac-kpi-magnet').textContent = s.magnet_toggles + '× magnet, praegu ' + (s.magnet_closed_now ? 'kinni' : 'lahti');
     });
 

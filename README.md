@@ -177,7 +177,7 @@ fresh data.
   its own venv (`python3 -m venv venv && ./venv/bin/pip install -r
   requirements.txt`) and a `.env` file (gitignored, chmod 600) with:
   ```
-  TELTONIKA_DB_DSN=dbname=agro_tsdb user=teltonika_api password=<...> host=127.0.0.1
+  TELTONIKA_DB_DSN=dbname=telemetry_tsdb user=teltonika_api password=<...> host=127.0.0.1
   ```
 - **`teltonika.ventcap.ee-apache.conf`** — reference copy of the Apache
   vhost (copy to `/etc/apache2/sites-available/`, `a2ensite`, reload).
@@ -191,7 +191,7 @@ create it once with:
 
 ```sql
 CREATE ROLE teltonika_api LOGIN PASSWORD '...';
-GRANT CONNECT ON DATABASE agro_tsdb TO teltonika_api;
+GRANT CONNECT ON DATABASE telemetry_tsdb TO teltonika_api;
 GRANT USAGE ON SCHEMA public TO teltonika_api;
 GRANT SELECT ON measurements TO teltonika_api;
 ```
