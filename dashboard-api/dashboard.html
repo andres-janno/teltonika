@@ -3,8 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Traktori Telemeetria</title>
+<title>Telemeetria</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -23,6 +25,9 @@
     --slot-1: #2a78d6;
     --slot-2: #eb6834;
     --slot-3: #1baf7a;
+    --seg-4: #8a5cd6;
+    --seg-5: #b8860b;
+    --seg-6: #d6458c;
     --status-warning: #fab219;
     --status-good: #0ca30c;
     --status-critical: #d03b3b;
@@ -43,6 +48,9 @@
       --slot-1: #3987e5;
       --slot-2: #d95926;
       --slot-3: #199e70;
+      --seg-4: #9d74e8;
+      --seg-5: #d4a21f;
+      --seg-6: #e0649f;
       --status-warning: #fab219;
       --status-good: #0ca30c;
       --status-critical: #e66767;
@@ -63,6 +71,9 @@
     --slot-1: #3987e5;
     --slot-2: #d95926;
     --slot-3: #199e70;
+    --seg-4: #9d74e8;
+    --seg-5: #d4a21f;
+    --seg-6: #e0649f;
     --status-warning: #fab219;
     --status-good: #0ca30c;
     --status-critical: #e66767;
@@ -117,7 +128,16 @@
     display: flex;
     align-items: center;
     gap: 10px;
+    flex-wrap: wrap;
   }
+  /* every header control shares one height */
+  .header-right { --ctl-h: 32px; }
+  .header-right select, .header-right .view-toggle, .header-right .refresh-btn {
+    height: var(--ctl-h);
+    box-sizing: border-box;
+  }
+  .header-right .view-toggle button { height: 100%; display: flex; align-items: center; }
+  .header-right select[hidden] { display: none; }
   #date-picker, #imei-picker, #mac-picker {
     font-family: 'IBM Plex Mono', monospace;
     font-size: 13px;
@@ -125,7 +145,7 @@
     color: var(--text-primary);
     border: 1px solid var(--border);
     border-radius: 6px;
-    padding: 5px 8px;
+    padding: 0 8px;
   }
 
   .view-toggle {
@@ -141,7 +161,7 @@
     border: none;
     background: var(--surface-1);
     color: var(--text-secondary);
-    padding: 6px 12px;
+    padding: 0 12px;
     cursor: pointer;
   }
   .view-toggle button + button { border-left: 1px solid var(--border); }
@@ -155,7 +175,7 @@
     border-radius: 6px;
     background: var(--surface-1);
     color: var(--text-secondary);
-    padding: 6px 12px;
+    padding: 0 12px;
     cursor: pointer;
   }
   .refresh-btn:hover { color: var(--text-primary); }
@@ -274,27 +294,29 @@
   }
   .legend-row .item { display: flex; align-items: center; gap: 6px; }
   .legend-row .sw { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  .legend-row button.item {
+    font: inherit; color: inherit; background: none; border: 1px solid transparent;
+    border-radius: 4px; padding: 2px 6px; margin: -3px -7px; cursor: pointer;
+  }
+  .legend-row button.item:hover { border-color: var(--border); }
+  .legend-row button.item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .legend-row button.item.off { color: var(--text-muted); text-decoration: line-through; }
+  .legend-row button.item.off .sw { background: none !important; box-shadow: inset 0 0 0 1.5px currentColor; }
+  .route-notes { font-size: 12px; color: var(--text-secondary); margin-top: 10px; display: flex; flex-direction: column; gap: 4px; }
+  .route-notes:empty { display: none; }
+  .legend-row [hidden] { display: none; }
+  .route-notes .warn::before { content: '⚠ '; color: var(--status-warning); }
 
-  #route-svg {
-    width: 100%;
-    height: auto;
-    display: block;
-    cursor: grab;
-    touch-action: none;
-    user-select: none;
-  }
-  #route-svg.panning { cursor: grabbing; }
   .route-wrap { border-radius: 8px; overflow: hidden; background: var(--surface-2); position: relative; }
-  .route-zoom {
-    position: absolute; top: 8px; right: 8px;
-    display: flex; flex-direction: column; gap: 4px;
+  #route-map, #mac-map { height: 460px; width: 100%; }
+  @media (max-width: 760px) { #route-map, #mac-map { height: 340px; } }
+  #mac-map .leaflet-control-layers, #mac-map .leaflet-bar a,
+  #route-map .leaflet-control-layers, #route-map .leaflet-bar a {
+    background: var(--surface-1); color: var(--text-primary); border-color: var(--border);
   }
-  .route-zoom button {
-    width: 28px; height: 28px; border-radius: 6px;
-    border: 1px solid var(--grid-line); background: var(--surface-1);
-    color: inherit; font: inherit; font-size: 16px; line-height: 1; cursor: pointer;
-  }
-  .route-zoom button:hover { background: var(--surface-2); }
+  #route-map .leaflet-control-layers, #mac-map .leaflet-control-layers { font: 12px 'IBM Plex Sans', sans-serif; }
+  #route-map .leaflet-tooltip, #mac-map .leaflet-tooltip { font: 12px 'IBM Plex Sans', sans-serif; }
+  .route-fit a { font-size: 15px; line-height: 30px; text-align: center; cursor: pointer; text-decoration: none; }
 
   table.eye-table {
     width: 100%;
@@ -316,6 +338,7 @@
     border-bottom: 1px solid var(--grid-line);
   }
   table.eye-table tr:last-child td { border-bottom: none; }
+  table.eye-table tr.ambiguous td { color: var(--text-muted); }
   .sensor-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 8px; vertical-align: -1px; }
   .pill {
     display: inline-flex;
@@ -349,30 +372,19 @@
 <div class="wrap">
   <header class="top">
     <div>
-      <h1>Traktori telemeetria</h1>
-      <div class="meta" id="header-meta">
-        <span id="meta-vehicle">FMC650 · IMEI <span class="mono" id="imei-label">—</span></span>
-        <span id="meta-attachment" hidden>Teltonika EYE andur · MAC <span class="mono" id="mac-label">—</span></span>
-      </div>
+      <h1>Telemeetria</h1>
     </div>
     <div class="header-right">
       <div class="view-toggle">
-        <button type="button" class="view-btn active" data-view="vehicle">Sõiduk</button>
+        <button type="button" class="view-btn active" data-view="vehicle">Masin</button>
         <button type="button" class="view-btn" data-view="attachment">Haakeriist</button>
       </div>
-      <div id="vehicle-controls" class="control-group">
-        <select id="imei-picker"></select>
-        <select id="date-picker"></select>
-        <div class="view-toggle window-toggle" id="vehicle-window-toggle">
-          <button type="button" class="window-btn" data-hours="4">4h</button>
-          <button type="button" class="window-btn" data-hours="8">8h</button>
-          <button type="button" class="window-btn" data-hours="24">24h</button>
-        </div>
-      </div>
-      <div id="attachment-controls" class="control-group" hidden>
-        <select id="mac-picker"></select>
-        <div class="view-toggle window-toggle" id="attachment-window-toggle">
-          <button type="button" class="window-btn active" data-hours="">Kõik</button>
+      <div class="control-group">
+        <select id="imei-picker" aria-label="Masin"></select>
+        <select id="mac-picker" aria-label="Haakeriist" hidden></select>
+        <!-- period is shared by both views and kept when switching between them -->
+        <select id="date-picker" aria-label="Päev"></select>
+        <div class="view-toggle window-toggle" id="window-toggle">
           <button type="button" class="window-btn" data-hours="4">4h</button>
           <button type="button" class="window-btn" data-hours="8">8h</button>
           <button type="button" class="window-btn" data-hours="24">24h</button>
@@ -412,41 +424,33 @@
         <div class="value mono" id="kpi-max-speed">–</div>
         <div class="sub" id="kpi-trips">–</div>
       </div>
-      <div class="kpi">
-        <div class="label">Toitepinge</div>
-        <div class="value mono" id="kpi-voltage">–</div>
-        <div class="sub" id="kpi-voltage-avg">–</div>
-      </div>
-      <div class="kpi">
-        <div class="label">GPS satelliidid</div>
-        <div class="value mono" id="kpi-satellites">–</div>
-        <div class="sub" id="kpi-hdop">–</div>
-      </div>
     </div>
 
-    <div class="grid-2" style="margin-bottom:20px">
-      <div class="panel">
-        <h2>Marsruut</h2>
-        <p class="panel-sub">GPS-punktid (kaardikihte pole — puhas asukohajoonis).</p>
-        <div class="route-wrap">
-          <svg id="route-svg" viewBox="0 0 640 380" preserveAspectRatio="xMidYMid meet"></svg>
-          <div class="route-zoom">
-            <button type="button" id="route-zoom-in" title="Suurenda" aria-label="Suurenda">+</button>
-            <button type="button" id="route-zoom-out" title="Vähenda" aria-label="Vähenda">−</button>
-            <button type="button" id="route-zoom-reset" title="Lähtesta" aria-label="Lähtesta">⟲</button>
-          </div>
-        </div>
-        <div class="legend-row" id="route-legend"></div>
+    <div class="panel" style="margin-bottom:20px">
+      <h2>Marsruut</h2>
+      <p class="panel-sub">GPS-punktid aluskaardil (Maa-ameti kaart / ortofoto, paremal üleval kihivalik).</p>
+      <div class="route-wrap">
+        <div id="route-map"></div>
       </div>
+      <div class="legend-row" id="route-legend"></div>
+      <div class="route-notes" id="route-notes"></div>
+    </div>
 
-      <div class="panel">
-        <h2>Kiirus ajas</h2>
-        <p class="panel-sub">km/h, katkestus näitab andmelünka</p>
-        <div class="chart-box"><canvas id="chart-speed"></canvas></div>
-        <h2 style="margin-top:16px">Toitepinge ajas</h2>
-        <p class="panel-sub">V, väline toide</p>
-        <div class="chart-box short"><canvas id="chart-volt"></canvas></div>
-      </div>
+    <div class="panel" style="margin-bottom:20px">
+      <h2>Kiirus ajas</h2>
+      <p class="panel-sub">km/h, katkestus näitab andmelünka</p>
+      <div class="chart-box"><canvas id="chart-speed"></canvas></div>
+    </div>
+
+    <div class="panel" id="engine-panel" style="margin-bottom:20px">
+      <h2>Mootor</h2>
+      <p class="panel-sub">Pöörded, kütusekulu ja koormus (CAN/OBD andmed, kui seade neid saadab)</p>
+      <div class="panel-sub" style="margin-bottom:4px">Mootori pöörded (rpm)</div>
+      <div class="chart-box short"><canvas id="chart-rpm"></canvas></div>
+      <div class="panel-sub" style="margin:12px 0 4px">Kütusekulu (l/h)</div>
+      <div class="chart-box short"><canvas id="chart-fuel"></canvas></div>
+      <div class="panel-sub" style="margin:12px 0 4px">Mootori koormus (%)</div>
+      <div class="chart-box short"><canvas id="chart-load"></canvas></div>
     </div>
 
     <div class="panel" style="margin-bottom:20px">
@@ -464,23 +468,6 @@
       </div>
     </div>
 
-    <div class="panel" id="engine-panel" style="margin-bottom:20px">
-      <h2>Mootor</h2>
-      <p class="panel-sub">Pöörded, kütusekulu ja koormus (CAN/OBD andmed, kui seade neid saadab)</p>
-      <div class="grid-2-even">
-        <div>
-          <div class="panel-sub" style="margin-bottom:4px">Mootori pöörded (rpm)</div>
-          <div class="chart-box short"><canvas id="chart-rpm"></canvas></div>
-        </div>
-        <div>
-          <div class="panel-sub" style="margin-bottom:4px">Kütusekulu (l/h)</div>
-          <div class="chart-box short"><canvas id="chart-fuel"></canvas></div>
-        </div>
-      </div>
-      <div class="panel-sub" style="margin:12px 0 4px">Mootori koormus (%)</div>
-      <div class="chart-box short"><canvas id="chart-load"></canvas></div>
-    </div>
-
     <footer class="foot">
       <span>Allikas: TimescaleDB <span class="mono">measurements</span> tabel (teltonika2mqtt gateway, FMC650) — live</span>
       <span id="gen-time" class="mono"></span>
@@ -489,15 +476,26 @@
 
   <div id="attachment-content" hidden>
     <div class="kpi-row" style="margin-bottom:20px">
+      <!-- tractor KPIs for the time this attachment was hitched to it -->
       <div class="kpi">
-        <div class="label">Nähtud</div>
-        <div class="value mono" id="mac-kpi-days">–</div>
-        <div class="sub" id="mac-kpi-range">–</div>
+        <div class="label">Kirjeid</div>
+        <div class="value mono" id="mac-kpi-records">–</div>
+        <div class="sub mono" id="mac-kpi-time-range">–</div>
       </div>
       <div class="kpi">
-        <div class="label">Traktoreid</div>
-        <div class="value mono" id="mac-kpi-devices">–</div>
-        <div class="sub">erinevat seadet</div>
+        <div class="label">Läbitud vahemaa</div>
+        <div class="value mono" id="mac-kpi-distance">–</div>
+        <div class="sub">registreeritud segmentides</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Liikumisaeg</div>
+        <div class="value mono" id="mac-kpi-moving">–</div>
+        <div class="sub" id="mac-kpi-avg-speed">–</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Max kiirus</div>
+        <div class="value mono" id="mac-kpi-max-speed">–</div>
+        <div class="sub" id="mac-kpi-trips">–</div>
       </div>
       <div class="kpi">
         <div class="label">Temperatuur</div>
@@ -509,16 +507,20 @@
         <div class="value mono" id="mac-kpi-hum">–</div>
         <div class="sub">mõõdetud vahemik</div>
       </div>
-      <div class="kpi">
-        <div class="label">Aku</div>
-        <div class="value mono" id="mac-kpi-battery">–</div>
-        <div class="sub" id="mac-kpi-magnet">–</div>
+    </div>
+
+    <div class="panel" style="margin-bottom:20px">
+      <h2>Kus kasutusel</h2>
+      <p class="panel-sub">Traktori marsruut ajal, mil haakeriist küljes oli; täpid = EYE anduri mõõtmised (asukoht traktori GPS-ist)</p>
+      <div class="route-wrap">
+        <div id="mac-map"></div>
       </div>
+      <div class="legend-row" id="mac-map-legend"></div>
     </div>
 
     <div class="panel" style="margin-bottom:20px">
       <h2>Millal ja kus kasutusel</h2>
-      <p class="panel-sub">Iga rida = üks traktor + üks päev, mil see haakeriist selle küljes oli</p>
+      <p class="panel-sub">Iga rida = üks traktor + üks päev, mil see haakeriist selle küljes oli. Kui andurit nägi samal ajal mitu traktorit (nt seisavad kõrvuti), ei omistata seda ühelegi.</p>
       <div class="sightings-table-wrap">
         <table class="eye-table">
           <thead><tr><th>Traktor (IMEI)</th><th>Päev</th><th>Esimest nähtud</th><th>Viimati nähtud</th><th>Kirjeid</th></tr></thead>
@@ -527,22 +529,21 @@
       </div>
     </div>
 
-    <div class="grid-2-even" style="margin-bottom:20px">
-      <div class="panel">
-        <h2>Temperatuur ajas</h2>
-        <p class="panel-sub">°C, katkestus näitab traktori vahetust või andmelünka</p>
-        <div class="chart-box"><canvas id="chart-mac-temp"></canvas></div>
-      </div>
-      <div class="panel">
-        <h2>Niiskus ajas</h2>
-        <p class="panel-sub">%, katkestus näitab traktori vahetust või andmelünka</p>
-        <div class="chart-box"><canvas id="chart-mac-hum"></canvas></div>
-      </div>
+    <div class="panel" style="margin-bottom:20px">
+      <h2>Temperatuur ajas</h2>
+      <p class="panel-sub">°C, katkestus näitab andmelünka</p>
+      <div class="chart-box"><canvas id="chart-mac-temp"></canvas></div>
+    </div>
+
+    <div class="panel" style="margin-bottom:20px">
+      <h2>Niiskus ajas</h2>
+      <p class="panel-sub">%, katkestus näitab andmelünka</p>
+      <div class="chart-box"><canvas id="chart-mac-hum"></canvas></div>
     </div>
 
     <div class="panel" style="margin-bottom:20px">
       <h2>Magneti olek ajas</h2>
-      <p class="panel-sub">Kinni/lahti, katkestus näitab traktori vahetust või andmelünka</p>
+      <p class="panel-sub">Kinni/lahti, katkestus näitab andmelünka</p>
       <div class="chart-box short"><canvas id="chart-mac-magnet"></canvas></div>
     </div>
 
@@ -608,6 +609,8 @@
           grid: { color: cv('--grid-line') },
           ticks: { color: cv('--text-muted') },
           title: yLabel ? { display: true, text: yLabel, color: cv('--text-muted'), font: { size: 11 } } : undefined,
+          // fixed width so stacked charts share the same plot area and line up in time
+          afterFit: (scale) => { scale.width = 64; },
         }
       }
     }, extra || {});
@@ -633,11 +636,6 @@
       type: 'line',
       data: { datasets: [lineDataset('Kiirus', bundle.series.spd, cv('--slot-1'))] },
       options: baseLineOptions('km/h')
-    });
-    charts.volt = new Chart(document.getElementById('chart-volt'), {
-      type: 'line',
-      data: { datasets: [lineDataset('Pinge', bundle.series.volt, cv('--slot-2'))] },
-      options: baseLineOptions('V')
     });
     charts.sat = new Chart(document.getElementById('chart-sat'), {
       type: 'line',
@@ -676,20 +674,14 @@
     const k = bundle.kpi;
     document.getElementById('kpi-records').textContent = k.record_count.toLocaleString('et-EE');
     document.getElementById('kpi-time-range').textContent = fmtClock(k.start) + ' – ' + fmtClock(k.end);
-    document.getElementById('kpi-distance').textContent = k.total_distance_km.toLocaleString('et-EE', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' km';
+    document.getElementById('kpi-distance').textContent = k.total_distance_km.toLocaleString('et-EE', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + 'km';
 
     const movH = Math.floor(k.moving_minutes / 60), movM = Math.round(k.moving_minutes % 60);
     document.getElementById('kpi-moving').textContent = (movH ? movH + 'h ' : '') + movM + 'min';
     document.getElementById('kpi-avg-speed').textContent = 'keskmine kiirus ' + k.avg_speed_kmh_when_moving.toLocaleString('et-EE') + ' km/h';
 
-    document.getElementById('kpi-max-speed').textContent = Math.round(k.max_speed_kmh) + ' km/h';
+    document.getElementById('kpi-max-speed').textContent = Math.round(k.max_speed_kmh) + 'km/h';
     document.getElementById('kpi-trips').textContent = k.ignition_cycles + ' süütetsüklit';
-
-    document.getElementById('kpi-voltage').textContent = (k.voltage_min != null ? k.voltage_min.toFixed(1) + '–' + k.voltage_max.toFixed(1) + ' V' : '–');
-    document.getElementById('kpi-voltage-avg').textContent = k.voltage_avg != null ? 'keskmine ' + k.voltage_avg.toFixed(2) + ' V' : '';
-
-    document.getElementById('kpi-satellites').textContent = k.satellites_avg != null ? k.satellites_avg.toLocaleString('et-EE') : '–';
-    document.getElementById('kpi-hdop').textContent = k.hdop_avg != null ? 'keskmine, HDOP ' + k.hdop_avg.toFixed(2) : '';
 
     document.getElementById('date-range').textContent = fmtDateTime(k.start) + ' – ' + fmtClock(k.end) + ' (Eesti aeg)';
 
@@ -708,50 +700,81 @@
   }
 
 
-  let routeZoomState = { k: 1, tx: 0, ty: 0 };
+  // Map view (center/zoom) kept across auto-refresh; null = fit to the route on next render.
+  let routeView = null;
+  let routeMap = null, routeLayer = null;
+  // Start times of segments the user switched off; kept across auto-refresh
+  // and matched by time range since downsampling can shift a segment's first point.
+  let routeHiddenSegs = [];
 
-  function renderRoute(bundle) {
-    const pts = bundle.route;
-    const svg = document.getElementById('route-svg');
-    const SVG_NS = 'http://www.w3.org/2000/svg';
-    function el(tag, attrs) {
-      const node = document.createElementNS(SVG_NS, tag);
-      Object.keys(attrs).forEach((k) => node.setAttribute(k, attrs[k]));
-      return node;
-    }
-    while (svg.firstChild) svg.removeChild(svg.firstChild);
-    const legend = document.getElementById('route-legend');
-    while (legend.firstChild) legend.removeChild(legend.firstChild);
+  const BASE_LAYER_KEY = 'teltonika.routeBase';
 
-    if (!pts.length) {
-      legend.textContent = 'GPS-andmed puuduvad selle päeva jaoks.';
-      return;
-    }
+  // Leaflet map with the shared base layers and a "fit" button; onFit runs when that button is clicked.
+  function makeBaseMap(elId, onFit) {
+    const tms = (layer, ext) => 'https://tiles.maaamet.ee/tm/tms/1.0.0/' + layer + '@GMC/{z}/{x}/{y}.' + ext;
+    const maaamet = '&copy; <a href="https://www.maaamet.ee/" target="_blank" rel="noopener">Maa-amet</a>';
+    const opts = { tms: true, maxNativeZoom: 18, maxZoom: 19, attribution: maaamet };
+    const hybrid = L.tileLayer(tms('hybriid', 'png'), Object.assign({}, opts, { zIndex: 2 }));
+    const bases = {
+      'Kaart': L.tileLayer(tms('kaart', 'png'), opts),
+      'Ortofoto': L.layerGroup([L.tileLayer(tms('foto', 'jpg'), opts), hybrid]),
+      'Ortofoto (ilma teedeta)': L.tileLayer(tms('foto', 'jpg'), opts),
+      'OpenStreetMap': L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>'
+      }),
+    };
+    let baseName = 'Kaart';
+    try { const saved = localStorage.getItem(BASE_LAYER_KEY); if (saved && bases[saved]) baseName = saved; } catch (e) {}
 
-    const lats = pts.map(p => p.lat), lons = pts.map(p => p.lon);
-    const minLat = Math.min(...lats), maxLat = Math.max(...lats);
-    const minLon = Math.min(...lons), maxLon = Math.max(...lons);
-    const midLat = (minLat + maxLat) / 2;
-    const lonScale = Math.cos(midLat * Math.PI / 180);
+    const map = L.map(elId, { zoomControl: true, attributionControl: true, layers: [bases[baseName]] });
+    map.attributionControl.setPrefix(false);
+    L.control.layers(bases, null, { position: 'topright' }).addTo(map);
+    map.on('baselayerchange', (e) => { try { localStorage.setItem(BASE_LAYER_KEY, e.name); } catch (err) {} });
 
-    const W = 640, H = 380, PAD = 24;
-    const spanLat = Math.max(maxLat - minLat, 1e-5);
-    const spanLon = Math.max((maxLon - minLon) * lonScale, 1e-5);
-    const scale = Math.min((W - 2 * PAD) / spanLon, (H - 2 * PAD) / spanLat);
+    const Fit = L.Control.extend({
+      options: { position: 'topleft' },
+      onAdd() {
+        const div = L.DomUtil.create('div', 'leaflet-bar route-fit');
+        const a = L.DomUtil.create('a', '', div);
+        a.href = '#'; a.title = 'Näita kogu marsruuti'; a.setAttribute('aria-label', a.title); a.textContent = '⟲';
+        L.DomEvent.on(a, 'click', (e) => { L.DomEvent.preventDefault(e); onFit(); });
+        L.DomEvent.disableClickPropagation(div);
+        return div;
+      }
+    });
+    map.addControl(new Fit());
+    return map;
+  }
 
-    function project(lat, lon) {
-      const x = PAD + ((lon - minLon) * lonScale) * scale + (W - 2 * PAD - spanLon * scale) / 2;
-      const y = H - PAD - ((lat - minLat) * scale) - (H - 2 * PAD - spanLat * scale) / 2;
-      return [x, y];
-    }
+  function ensureRouteMap() {
+    if (routeMap) return routeMap;
+    routeMap = makeBaseMap('route-map', () => { routeView = null; fitRoute(); });
+    routeMap.on('moveend', () => {
+      if (routeMap._routeReady) routeView = { center: routeMap.getCenter(), zoom: routeMap.getZoom() };
+    });
+    routeLayer = L.layerGroup().addTo(routeMap);
+    return routeMap;
+  }
 
+  let routeBounds = null;
+  function fitRoute() {
+    if (!routeMap) return;
+    routeMap.invalidateSize();
+    if (routeView) routeMap.setView(routeView.center, routeView.zoom, { animate: false });
+    else if (routeBounds) routeMap.fitBounds(routeBounds, { padding: [24, 24], maxZoom: 17, animate: false });
+    routeMap._routeReady = true;
+  }
+
+  const GAP_MS = 15 * 60 * 1000;
+  // Split a route at data gaps and position jumps; single-point pieces are dropped.
+  function splitRouteSegments(pts) {
+    if (!pts.length) return [];
+    const lonScale = Math.cos(pts[0].lat * Math.PI / 180);
     function distM(p1, p2) {
       const dlat = (p2.lat - p1.lat) * 111320;
       const dlon = (p2.lon - p1.lon) * 111320 * lonScale;
       return Math.sqrt(dlat * dlat + dlon * dlon);
     }
-
-    const GAP_MS = 15 * 60 * 1000;
     const MAX_STEP_M = 400;
     const rawSegments = [[pts[0]]];
     for (let i = 1; i < pts.length; i++) {
@@ -760,95 +783,125 @@
       }
       rawSegments[rawSegments.length - 1].push(pts[i]);
     }
-    const segments = rawSegments.filter(s => s.length >= 2);
+    return rawSegments.filter(s => s.length >= 2);
+  }
 
-    const segColors = [cv('--slot-1'), cv('--slot-2'), cv('--slot-3')];
+  function renderRoute(bundle) {
+    const pts = bundle.route;
+    const legend = document.getElementById('route-legend');
+    while (legend.firstChild) legend.removeChild(legend.firstChild);
+    const notes = document.getElementById('route-notes');
+    while (notes.firstChild) notes.removeChild(notes.firstChild);
 
-    for (let i = 0; i <= 4; i++) {
-      const y = PAD + i * (H - 2 * PAD) / 4;
-      svg.appendChild(el('line', { x1: PAD, y1: y, x2: W - PAD, y2: y, stroke: cv('--grid-line'), 'stroke-width': 1 }));
+    if (typeof L === 'undefined') {
+      legend.textContent = 'Kaarditeeki ei õnnestunud laadida.';
+      return;
     }
-    const g = el('g', {});
-    svg.appendChild(g);
-    const markers = [];
-    segments.forEach((seg, si) => {
-      if (seg.length < 2) return;
-      const color = segColors[si % segColors.length];
-      const d = seg.map((p, i) => {
-        const [x, y] = project(p.lat, p.lon);
-        return (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1);
-      }).join(' ');
-      g.appendChild(el('path', { d, fill: 'none', stroke: color, 'stroke-width': 2.5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'vector-effect': 'non-scaling-stroke' }));
-      const [sx, sy] = project(seg[0].lat, seg[0].lon);
-      const [ex, ey] = project(seg[seg.length - 1].lat, seg[seg.length - 1].lon);
-      const c1 = el('circle', { cx: sx, cy: sy, r: 5, fill: cv('--surface-1'), stroke: color, 'stroke-width': 2, 'vector-effect': 'non-scaling-stroke' });
-      const c2 = el('circle', { cx: ex, cy: ey, r: 4, fill: color });
-      g.appendChild(c1); g.appendChild(c2);
-      markers.push([c1, 5], [c2, 4]);
+    const map = ensureRouteMap();
+    map._routeReady = false;
+    routeLayer.clearLayers();
+    routeBounds = null;
 
-      const item = document.createElement('span');
+    if (!pts.length) {
+      legend.textContent = 'GPS-andmed puuduvad selle päeva jaoks.';
+      setTimeout(() => { map.invalidateSize(); }, 0);
+      return;
+    }
+
+    const segments = splitRouteSegments(pts);
+
+    const segColors = ['--slot-1', '--slot-2', '--slot-3', '--seg-4', '--seg-5', '--seg-6'].map(cv);
+    const clock = (t) => fmtClock(new Date(t).toISOString());
+    const frozen = bundle.routeFrozen || [];
+    const ll = (p) => [p.lat, p.lon];
+
+    // Dashed connectors between consecutive segments: the route there is unknown.
+    // Added first so they sit under the segment lines.
+    const connectors = [];
+    for (let si = 0; si < segments.length - 1; si++) {
+      const a = segments[si][segments[si].length - 1], b = segments[si + 1][0];
+      const fz = frozen.find(f => f.to >= a.t - 120000 && f.from <= b.t);
+      const line = L.polyline([ll(a), ll(b)], {
+        color: fz ? cv('--status-warning') : '#6b675c',
+        weight: fz ? 3 : 2, dashArray: '6 6', opacity: 0.95, interactive: true
+      });
+      line.bindTooltip(fz
+        ? 'Asukoht külmunud ' + clock(fz.from) + '–' + clock(fz.to) + ': CAN-kiirus kuni ' + Math.round(fz.max_can_speed) + ' km/h, tegelik teekond puudub'
+        : (b.t - a.t > GAP_MS ? 'Andmelünk ' : 'Asukoha hüpe ') + clock(a.t) + '–' + clock(b.t), { sticky: true });
+      connectors.push({ line, a: si, b: si + 1 });
+    }
+
+    const segViews = [];
+    const allLatLngs = [];
+    segments.forEach((seg, si) => {
+      const color = segColors[si % segColors.length];
+      const latlngs = seg.map(ll);
+      allLatLngs.push(...latlngs);
+      const range = clock(seg[0].t) + '–' + clock(seg[seg.length - 1].t);
+      // white casing keeps the line readable on top of the orthophoto
+      const casing = L.polyline(latlngs, { color: '#ffffff', weight: 6, opacity: 0.85, interactive: false });
+      const path = L.polyline(latlngs, { color, weight: 3.5, opacity: 1, lineJoin: 'round' })
+        .bindTooltip('Segment ' + (si + 1) + ' (' + range + ')', { sticky: true });
+      const start = L.circleMarker(latlngs[0], { radius: 6, color, weight: 2.5, fillColor: '#ffffff', fillOpacity: 1 })
+        .bindTooltip('Segment ' + (si + 1) + ' algus ' + clock(seg[0].t));
+      const end = L.circleMarker(latlngs[latlngs.length - 1], { radius: 5, color: '#ffffff', weight: 1.5, fillColor: color, fillOpacity: 1 })
+        .bindTooltip('Segment ' + (si + 1) + ' lõpp ' + clock(seg[seg.length - 1].t));
+
+      const item = document.createElement('button');
+      item.type = 'button';
       item.className = 'item';
+      item.title = 'Klõpsa, et segment kaardil peita või näidata';
       const sw = document.createElement('span');
       sw.className = 'sw'; sw.style.background = color;
       item.appendChild(sw);
-      item.appendChild(document.createTextNode(
-        'Segment ' + (si + 1) + ' (' + fmtClock(new Date(seg[0].t).toISOString()) + '–' + fmtClock(new Date(seg[seg.length - 1].t).toISOString()) + ')'
-      ));
+      item.appendChild(document.createTextNode('Segment ' + (si + 1) + ' (' + range + ')'));
       legend.appendChild(item);
+
+      const view = { from: seg[0].t, to: seg[seg.length - 1].t, layers: [casing, path, start, end], item };
+      view.off = routeHiddenSegs.some(t => t >= view.from - 60000 && t <= view.to);
+      item.onclick = () => { view.off = !view.off; applyVisibility(); };
+      segViews.push(view);
+    });
+    routeBounds = L.latLngBounds(allLatLngs.length ? allLatLngs : pts.map(ll));
+
+    const showAll = document.createElement('button');
+    showAll.type = 'button';
+    showAll.className = 'item';
+    showAll.textContent = 'Näita kõiki';
+    showAll.onclick = () => { segViews.forEach(v => { v.off = false; }); applyVisibility(); };
+    if (segViews.length > 1) legend.appendChild(showAll);
+
+    function applyVisibility() {
+      routeLayer.clearLayers();
+      connectors.forEach((c) => {
+        if (!segViews[c.a].off && !segViews[c.b].off) routeLayer.addLayer(c.line);
+      });
+      segViews.forEach((v) => {
+        if (!v.off) v.layers.forEach(l => routeLayer.addLayer(l));
+        v.item.classList.toggle('off', v.off);
+        v.item.setAttribute('aria-pressed', String(!v.off));
+      });
+      routeHiddenSegs = segViews.filter(v => v.off).map(v => v.from);
+      showAll.hidden = !routeHiddenSegs.length;
+    }
+    applyVisibility();
+
+    if (connectors.length) {
+      const n = document.createElement('div');
+      n.textContent = 'Katkendjoon ühendab segmente, mille vahel teekond puudub (andmelünk või asukoha hüpe) — tegelik sõidutee polnud selline.';
+      notes.appendChild(n);
+    }
+    frozen.forEach((f) => {
+      const n = document.createElement('div');
+      n.className = 'warn';
+      n.textContent = 'Asukoht külmunud ' + clock(f.from) + '–' + clock(f.to) + ': CAN-kiirus kuni ' + Math.round(f.max_can_speed) +
+        ' km/h, umbes ' + f.km_est.toLocaleString('et-EE', { maximumFractionDigits: 1 }) +
+        ' km sõitu puudub kaardilt (seade ei uuendanud selle aja koordinaate).';
+      notes.appendChild(n);
     });
 
-    // Zoom / pan state (view transform applied to <g>)
-    let { k, tx, ty } = routeZoomState;
-    const MIN_K = 1, MAX_K = 60;
-    function apply() {
-      // keep the content from being panned fully out of view
-      tx = Math.min(0, Math.max(W - W * k, tx));
-      ty = Math.min(0, Math.max(H - H * k, ty));
-      routeZoomState = { k, tx, ty };
-      g.setAttribute('transform', 'translate(' + tx + ',' + ty + ') scale(' + k + ')');
-      markers.forEach(([c, r]) => c.setAttribute('r', r / k));
-    }
-    function toSvg(evt) {
-      const r = svg.getBoundingClientRect();
-      return [(evt.clientX - r.left) * W / r.width, (evt.clientY - r.top) * H / r.height];
-    }
-    function zoomAt(px, py, factor) {
-      const nk = Math.min(MAX_K, Math.max(MIN_K, k * factor));
-      const f = nk / k;
-      tx = px - (px - tx) * f;
-      ty = py - (py - ty) * f;
-      k = nk;
-      apply();
-    }
-    svg.onwheel = (e) => {
-      e.preventDefault();
-      const [px, py] = toSvg(e);
-      zoomAt(px, py, e.deltaY < 0 ? 1.25 : 1 / 1.25);
-    };
-    svg.ondblclick = (e) => {
-      const [px, py] = toSvg(e);
-      zoomAt(px, py, 2);
-    };
-    let drag = null;
-    svg.onpointerdown = (e) => {
-      drag = { x: e.clientX, y: e.clientY, tx, ty };
-      svg.setPointerCapture(e.pointerId);
-      svg.classList.add('panning');
-    };
-    svg.onpointermove = (e) => {
-      if (!drag) return;
-      const r = svg.getBoundingClientRect();
-      tx = drag.tx + (e.clientX - drag.x) * W / r.width;
-      ty = drag.ty + (e.clientY - drag.y) * H / r.height;
-      apply();
-    };
-    const endDrag = () => { drag = null; svg.classList.remove('panning'); };
-    svg.onpointerup = endDrag;
-    svg.onpointercancel = endDrag;
-    document.getElementById('route-zoom-in').onclick = () => zoomAt(W / 2, H / 2, 1.5);
-    document.getElementById('route-zoom-out').onclick = () => zoomAt(W / 2, H / 2, 1 / 1.5);
-    document.getElementById('route-zoom-reset').onclick = () => { k = 1; tx = 0; ty = 0; apply(); };
-    apply();
+    // The dashboard container is unhidden right after this call - size/fit once it is laid out.
+    setTimeout(fitRoute, 0);
   }
 
   function renderDashboard(bundle) {
@@ -872,14 +925,16 @@
   async function loadDashboard(imei, opts, silent) {
     if (opts && opts.hours) {
       if (currentHours !== opts.hours || currentImei !== imei) {
-        routeZoomState = { k: 1, tx: 0, ty: 0 };
+        routeView = null;
+        routeHiddenSegs = [];
       }
       currentHours = opts.hours;
       currentDate = null;
     } else {
       const nextDate = opts && opts.date;
       if (currentDate !== nextDate || currentImei !== imei || currentHours !== null) {
-        routeZoomState = { k: 1, tx: 0, ty: 0 };
+        routeView = null;
+        routeHiddenSegs = [];
       }
       currentDate = nextDate;
       currentHours = null;
@@ -899,7 +954,6 @@
         return;
       }
       const bundle = await res.json();
-      document.getElementById('imei-label').textContent = imei;
       renderDashboard(bundle);
     } catch (e) {
       console.error('[dashboard] load failed:', e);
@@ -907,96 +961,149 @@
     }
   }
 
-  async function loadDatesForImei(imei, preferredDate) {
-    const datePicker = document.getElementById('date-picker');
-    while (datePicker.firstChild) datePicker.removeChild(datePicker.firstChild);
-
-    const res = await fetch('/api/dates?imei=' + encodeURIComponent(imei));
-    const data = await res.json();
-    const dates = data.dates || [];
-    if (!dates.length) {
-      showStatus('Selle seadme kohta ei leitud veel andmeid.', false);
-      return;
-    }
-    dates.forEach((d) => {
-      const opt = document.createElement('option');
-      opt.value = d;
-      opt.textContent = new Date(d + 'T00:00:00').toLocaleDateString('et-EE', { day: '2-digit', month: '2-digit', year: 'numeric' });
-      datePicker.appendChild(opt);
-    });
-    const chosen = (preferredDate && dates.includes(preferredDate)) ? preferredDate : dates[0];
-    datePicker.value = chosen;
-    await loadDashboard(imei, { date: chosen });
-  }
-
   async function initVehicle() {
     const imeiPicker = document.getElementById('imei-picker');
-    const datePicker = document.getElementById('date-picker');
-    const windowBtns = document.querySelectorAll('#vehicle-window-toggle .window-btn');
-    try {
-      const res = await fetch('/api/imeis');
-      const data = await res.json();
-      const imeis = data.imeis || [];
-      if (!imeis.length) {
-        showStatus('Andmebaasis pole veel ühtegi seadme andmeid.', false);
-        return;
-      }
-      imeis.forEach((imei) => {
-        const opt = document.createElement('option');
-        opt.value = imei;
-        opt.textContent = imei;
-        imeiPicker.appendChild(opt);
-      });
-      imeiPicker.value = imeis[0];
-
-      imeiPicker.addEventListener('change', () => {
-        // Switching tractor is a filter change, not a period change - keep
-        // whichever period (window or date) was already selected.
-        if (currentHours) {
-          loadDashboard(imeiPicker.value, { hours: currentHours });
-        } else {
-          loadDatesForImei(imeiPicker.value, currentDate);
-        }
-      });
-      datePicker.addEventListener('change', () => {
-        windowBtns.forEach((b) => b.classList.remove('active'));
-        loadDashboard(imeiPicker.value, { date: datePicker.value });
-      });
-      windowBtns.forEach((b) => b.addEventListener('click', () => {
-        windowBtns.forEach((x) => x.classList.toggle('active', x === b));
-        loadDashboard(currentImei, { hours: Number(b.dataset.hours) });
-      }));
-
-      await loadDatesForImei(imeis[0]);
-      vehicleInitialized = true;
-    } catch (e) {
-      console.error('[dashboard] init failed:', e);
-      showStatus('Ei saanud ühendust API-ga.', true);
+    const res = await fetch('/api/imeis');
+    const data = await res.json();
+    const imeis = data.imeis || [];
+    if (!imeis.length) {
+      showStatus('Andmebaasis pole veel ühtegi seadme andmeid.', false);
+      return false;
     }
+    ['', ...imeis].forEach((imei) => {
+      const opt = document.createElement('option');
+      opt.value = imei;
+      opt.textContent = imei || '— vali masin —';
+      imeiPicker.appendChild(opt);
+    });
+    imeiPicker.value = '';
+    // A newly picked tractor opens on its latest day with data (a 4h/8h/24h window is kept).
+    imeiPicker.addEventListener('change', () => { period.date = null; loadCurrent(false); });
+    vehicleInitialized = true;
+    return true;
   }
 
-  // --- Attachment (MAC) view - full history across every tractor/day ---
+  // --- Attachment (MAC) view - one EYE sensor across every tractor it was seen on ---
   const macCharts = {};
   function destroyMacCharts() {
     Object.values(macCharts).forEach((c) => { try { c.destroy(); } catch (e) {} });
   }
 
+  let macMap = null, macLayer = null, macBounds = null;
+  // Map view kept across auto-refresh; null = fit to the data on next render.
+  let macView = null;
+  function ensureMacMap() {
+    if (macMap) return macMap;
+    macMap = makeBaseMap('mac-map', () => { macView = null; fitMacMap(); });
+    macMap.on('moveend', () => {
+      if (macMap._routeReady) macView = { center: macMap.getCenter(), zoom: macMap.getZoom() };
+    });
+    macLayer = L.layerGroup().addTo(macMap);
+    return macMap;
+  }
+  function fitMacMap() {
+    if (!macMap) return;
+    macMap.invalidateSize();
+    if (macView) macMap.setView(macView.center, macView.zoom, { animate: false });
+    else if (macBounds) macMap.fitBounds(macBounds, { padding: [24, 24], maxZoom: 17, animate: false });
+    macMap._routeReady = true;
+  }
+
+  function renderMacMap(bundle) {
+    const legend = document.getElementById('mac-map-legend');
+    while (legend.firstChild) legend.removeChild(legend.firstChild);
+    if (typeof L === 'undefined') {
+      legend.textContent = 'Kaarditeeki ei õnnestunud laadida.';
+      return;
+    }
+    const map = ensureMacMap();
+    map._routeReady = false;
+    macLayer.clearLayers();
+    macBounds = null;
+
+    const routes = bundle.routes || [];
+    const eyePts = bundle.eyePoints || [];
+    if (!routes.length && !eyePts.length) {
+      legend.textContent = 'Asukohaandmed puuduvad selle perioodi jaoks.';
+      setTimeout(() => { map.invalidateSize(); }, 0);
+      return;
+    }
+
+    // one color per tractor
+    const palette = ['--slot-1', '--slot-2', '--slot-3', '--seg-4', '--seg-5', '--seg-6'].map(cv);
+    const devices = [];
+    routes.forEach(r => { if (!devices.includes(r.device)) devices.push(r.device); });
+    eyePts.forEach(p => { if (!devices.includes(p.device)) devices.push(p.device); });
+    const colorOf = (d) => palette[devices.indexOf(d) % palette.length];
+    const fmtT = (t) => fmtDateTime(new Date(t).toISOString());
+    const ll = (p) => [p.lat, p.lon];
+    const allLatLngs = [];
+
+    routes.forEach((r) => {
+      const color = colorOf(r.device);
+      splitRouteSegments(r.points).forEach((seg) => {
+        const latlngs = seg.map(ll);
+        allLatLngs.push(...latlngs);
+        const tip = 'Traktor ' + r.device + ' · ' + fmtT(seg[0].t) + '–' + fmtClock(new Date(seg[seg.length - 1].t).toISOString());
+        macLayer.addLayer(L.polyline(latlngs, { color: '#ffffff', weight: 6, opacity: 0.85, interactive: false }));
+        macLayer.addLayer(L.polyline(latlngs, { color, weight: 3.5, opacity: 1, lineJoin: 'round' }).bindTooltip(tip, { sticky: true }));
+      });
+    });
+
+    eyePts.forEach((p, i) => {
+      const last = i === eyePts.length - 1;
+      allLatLngs.push(ll(p));
+      const tip = (last ? 'Viimati nähtud ' : '') + fmtT(p.t) + ' · traktor ' + p.device +
+        (p.temp != null ? ' · ' + p.temp.toFixed(1) + ' °C' : '');
+      macLayer.addLayer(L.circleMarker(ll(p), last
+        ? { radius: 8, color: colorOf(p.device), weight: 3, fillColor: '#ffffff', fillOpacity: 1 }
+        : { radius: 4, color: '#ffffff', weight: 1.5, fillColor: colorOf(p.device), fillOpacity: 1 }
+      ).bindTooltip(tip));
+    });
+    macBounds = L.latLngBounds(allLatLngs);
+
+    devices.forEach((d) => {
+      const item = document.createElement('span');
+      item.className = 'item';
+      const sw = document.createElement('span');
+      sw.className = 'sw'; sw.style.background = colorOf(d);
+      item.appendChild(sw);
+      item.appendChild(document.createTextNode('Traktor ' + d));
+      legend.appendChild(item);
+    });
+    if (eyePts.length) {
+      const item = document.createElement('span');
+      item.className = 'item';
+      item.textContent = '◯ suur ring = viimati nähtud asukoht';
+      legend.appendChild(item);
+    }
+
+    // The attachment container is unhidden right after this call - size/fit once it is laid out.
+    setTimeout(fitMacMap, 0);
+  }
+
   function renderMacUsage(bundle) {
-    document.getElementById('mac-label').textContent = bundle.stats.mac;
+    safe('mac map', () => renderMacMap(bundle));
     safe('mac kpis', () => {
       const s = bundle.stats;
-      document.getElementById('mac-kpi-days').textContent = s.day_count;
-      document.getElementById('mac-kpi-range').textContent =
-        new Date(s.first_seen).toLocaleDateString('et-EE', { day: '2-digit', month: '2-digit', year: 'numeric' }) +
-        ' – ' + new Date(s.last_seen).toLocaleDateString('et-EE', { day: '2-digit', month: '2-digit', year: 'numeric' });
-      document.getElementById('mac-kpi-devices').textContent = s.device_count;
-      document.getElementById('mac-kpi-temp').textContent = (s.temp_min != null ? s.temp_min.toFixed(1) + '–' + s.temp_max.toFixed(1) + ' °C' : '–');
+      const v = bundle.vehicleKpi;
+      const set = (id, text) => { document.getElementById(id).textContent = text; };
+      if (v) {
+        set('mac-kpi-records', v.record_count.toLocaleString('et-EE'));
+        set('mac-kpi-time-range', fmtClock(v.start) + ' – ' + fmtClock(v.end));
+        set('mac-kpi-distance', v.total_distance_km.toLocaleString('et-EE', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + 'km');
+        const movH = Math.floor(v.moving_minutes / 60), movM = Math.round(v.moving_minutes % 60);
+        set('mac-kpi-moving', (movH ? movH + 'h ' : '') + movM + 'min');
+        set('mac-kpi-avg-speed', 'keskmine kiirus ' + v.avg_speed_kmh_when_moving.toLocaleString('et-EE') + ' km/h');
+        set('mac-kpi-max-speed', Math.round(v.max_speed_kmh) + 'km/h');
+        set('mac-kpi-trips', v.ignition_cycles + ' süütetsüklit');
+      } else {
+        ['mac-kpi-records', 'mac-kpi-distance', 'mac-kpi-moving', 'mac-kpi-max-speed'].forEach((id) => set(id, '–'));
+        ['mac-kpi-time-range', 'mac-kpi-avg-speed', 'mac-kpi-trips'].forEach((id) => set(id, 'masina andmed puuduvad'));
+      }
+      document.getElementById('mac-kpi-temp').textContent = (s.temp_min != null ? s.temp_min.toFixed(1) + '–' + s.temp_max.toFixed(1) + '°C' : '–');
       document.getElementById('mac-kpi-temp-avg').textContent = s.temp_avg != null ? 'keskmine ' + s.temp_avg.toFixed(1) + ' °C' : '';
-      document.getElementById('mac-kpi-hum').textContent = (s.humidity_min != null ? s.humidity_min.toFixed(0) + '–' + s.humidity_max.toFixed(0) + ' %' : '–');
-      document.getElementById('mac-kpi-battery').textContent =
-        s.battery != null ? s.battery + ' %' :
-        s.battery_v != null ? s.battery_v.toFixed(2) + ' V' : '–';
-      document.getElementById('mac-kpi-magnet').textContent = s.magnet_toggles + '× magnet, praegu ' + (s.magnet_closed_now ? 'kinni' : 'lahti');
+      document.getElementById('mac-kpi-hum').textContent = (s.humidity_min != null ? s.humidity_min.toFixed(0) + '–' + s.humidity_max.toFixed(0) + '%' : '–');
     });
 
     safe('sightings table', () => {
@@ -1005,7 +1112,15 @@
       bundle.sightings.forEach((s) => {
         const tr = document.createElement('tr');
         function td(text) { const c = document.createElement('td'); c.className = 'mono'; c.textContent = text; return c; }
-        tr.appendChild(td(s.device));
+        if (s.device == null) {
+          tr.className = 'ambiguous';
+          const c = td('mitme traktori levis');
+          c.style.fontFamily = 'inherit';
+          c.title = 'Andurit nägi samal ajal mitu traktorit — ei omistata ühelegi';
+          tr.appendChild(c);
+        } else {
+          tr.appendChild(td(s.device));
+        }
         tr.appendChild(td(new Date(s.day + 'T00:00:00').toLocaleDateString('et-EE', { day: '2-digit', month: '2-digit', year: 'numeric' })));
         tr.appendChild(td(fmtClock(s.first_seen)));
         tr.appendChild(td(fmtClock(s.last_seen)));
@@ -1054,6 +1169,7 @@
           callback: (v) => (v === 1 ? 'Kinni' : v === 0 ? 'Lahti' : ''),
         },
         min: -0.2, max: 1.2,
+        afterFit: (scale) => { scale.width = 64; },
       };
       macCharts.magnet = new Chart(document.getElementById('chart-mac-magnet'), {
         type: 'line',
@@ -1062,20 +1178,29 @@
       });
     });
 
+    const s0 = bundle.stats;
+    const sameDay = new Date(s0.first_seen).toLocaleDateString('et-EE', { timeZone: TZ }) === new Date(s0.last_seen).toLocaleDateString('et-EE', { timeZone: TZ });
+    document.getElementById('date-range').textContent =
+      fmtDateTime(s0.first_seen) + ' – ' + (sameDay ? fmtClock(s0.last_seen) : fmtDateTime(s0.last_seen)) + ' (Eesti aeg)';
     document.getElementById('mac-gen-time').textContent = 'Laaditud ' + new Date().toLocaleString('et-EE', { timeZone: TZ });
     document.getElementById('status-msg').hidden = true;
     document.getElementById('attachment-content').hidden = false;
   }
 
-  async function loadMacUsage(mac, silent, hours) {
+  let macViewSig = null;
+  async function loadMacUsage(mac, silent, opts) {
+    const sig = mac + '|' + (opts.hours ? 'h' + opts.hours : opts.date);
+    if (sig !== macViewSig) macView = null;
+    macViewSig = sig;
     currentMac = mac;
-    currentMacHours = hours || null;
     if (!silent) showStatus('Laadin andmeid…', false);
     try {
-      const url = '/api/mac-usage?mac=' + encodeURIComponent(mac) + (currentMacHours ? '&hours=' + currentMacHours : '');
+      let url = '/api/mac-usage?mac=' + encodeURIComponent(mac);
+      if (opts.hours) url += '&hours=' + opts.hours;
+      else if (opts.date) url += '&date=' + encodeURIComponent(opts.date);
       const res = await fetch(url);
       if (res.status === 404) {
-        if (!silent) showStatus('Selle MAC-i kohta andmeid ei leitud.', false);
+        if (!silent) showStatus(opts.hours ? 'Selle ajavahemiku kohta andmeid ei leitud.' : opts.date ? 'Selle päeva kohta andmeid ei leitud.' : 'Selle MAC-i kohta andmeid ei leitud.', false);
         return;
       }
       if (!res.ok) {
@@ -1092,68 +1217,145 @@
 
   async function initAttachment() {
     const macPicker = document.getElementById('mac-picker');
-    const windowBtns = document.querySelectorAll('#attachment-window-toggle .window-btn');
-    try {
-      const res = await fetch('/api/macs');
-      const data = await res.json();
-      const macs = data.macs || [];
-      if (!macs.length) {
-        showStatus('Andmebaasis pole veel ühtegi EYE anduri andmeid.', false);
-        return;
-      }
-      macs.forEach((mac) => {
-        const opt = document.createElement('option');
-        opt.value = mac; opt.textContent = mac;
-        macPicker.appendChild(opt);
-      });
-      macPicker.value = macs[0];
-      macPicker.addEventListener('change', () => {
-        // Switching attachment is a filter change, not a period change -
-        // keep whichever window was already selected.
-        loadMacUsage(macPicker.value, false, currentMacHours);
-      });
-      windowBtns.forEach((b) => b.addEventListener('click', () => {
-        windowBtns.forEach((x) => x.classList.toggle('active', x === b));
-        loadMacUsage(currentMac, false, b.dataset.hours ? Number(b.dataset.hours) : null);
-      }));
-      await loadMacUsage(macs[0], false, null);
-      attachmentInitialized = true;
-    } catch (e) {
-      console.error('[dashboard] attachment init failed:', e);
-      showStatus('Ei saanud ühendust API-ga.', true);
+    const res = await fetch('/api/macs');
+    const data = await res.json();
+    const macs = data.macs || [];
+    if (!macs.length) {
+      showStatus('Andmebaasis pole veel ühtegi EYE anduri andmeid.', false);
+      return false;
     }
+    ['', ...macs].forEach((mac) => {
+      const opt = document.createElement('option');
+      opt.value = mac; opt.textContent = mac || '— vali haakeriist —';
+      macPicker.appendChild(opt);
+    });
+    macPicker.value = '';
+    // A newly picked attachment opens on its latest day with data (a 4h/8h/24h window is kept).
+    macPicker.addEventListener('change', () => { period.date = null; loadCurrent(false); });
+    attachmentInitialized = true;
+    return true;
   }
 
   // --- View toggle ---
   let vehicleInitialized = false;
   let attachmentInitialized = false;
   let currentView = 'vehicle';
-  let currentImei = null, currentDate = null, currentHours = null, currentMac = null, currentMacHours = null;
+  let currentImei = null, currentDate = null, currentHours = null, currentMac = null;
 
-  function switchView(view) {
+  // --- Shared period, kept when switching between vehicle and attachment ---
+  // hours: rolling window (wins over date); date: 'YYYY-MM-DD'.
+  const period = { date: null, hours: null };
+  const lastLoaded = { vehicle: null, attachment: null };
+  let datePickerSig = null;
+
+  function fmtDay(d) {
+    return new Date(d + 'T00:00:00').toLocaleDateString('et-EE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  }
+
+  function fillDatePicker(dates, shownDate) {
+    const picker = document.getElementById('date-picker');
+    const opts = [];
+    if (period.hours) opts.push(['', '— päev —']);
+    const list = dates.slice();
+    // a kept date the current tractor/attachment has no data for stays selectable
+    if (shownDate && !list.includes(shownDate)) {
+      list.push(shownDate);
+      list.sort().reverse();
+    }
+    list.forEach((d) => opts.push([d, fmtDay(d) + (dates.includes(d) ? '' : ' (andmeid pole)')]));
+    if (!opts.length) opts.push(['', '— päev —']);
+    const value = period.hours ? '' : (shownDate || '');
+    // rebuild only on change so a 30 s auto-refresh doesn't close an open dropdown
+    const sig = JSON.stringify([opts, value]);
+    if (sig === datePickerSig) return;
+    datePickerSig = sig;
+    while (picker.firstChild) picker.removeChild(picker.firstChild);
+    opts.forEach(([v, text]) => {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = text;
+      picker.appendChild(o);
+    });
+    picker.value = value;
+  }
+
+  function syncWindowButtons() {
+    document.querySelectorAll('#window-toggle .window-btn').forEach((b) => {
+      b.classList.toggle('active', Number(b.dataset.hours) === period.hours);
+    });
+  }
+
+  // Load the visible view for its selected tractor/attachment and the shared period.
+  async function loadCurrent(silent) {
+    const view = currentView;
+    const key = document.getElementById(view === 'vehicle' ? 'imei-picker' : 'mac-picker').value;
+    if (!key) {
+      fillDatePicker([], null);
+      syncWindowButtons();
+      lastLoaded[view] = null;
+      showStatus(view === 'vehicle' ? 'Vali ülevalt masin.' : 'Vali ülevalt haakeriist.', false);
+      return;
+    }
+    let dates = [];
+    try {
+      const res = await fetch((view === 'vehicle' ? '/api/dates?imei=' : '/api/mac-dates?mac=') + encodeURIComponent(key));
+      dates = (await res.json()).dates || [];
+    } catch (e) {
+      console.error('[dashboard] dates load failed:', e);
+    }
+    if (view !== currentView) return;
+    // default to the latest day with data; a day this tractor/attachment has no data for falls back to it too
+    if (!period.date || (dates.length && !dates.includes(period.date))) period.date = dates[0] || null;
+    const date = period.date;
+    fillDatePicker(dates, date);
+    syncWindowButtons();
+
+    const sig = key + '|' + (period.hours ? 'h' + period.hours : date);
+    // stale content must not stay on screen silently when the selection changed
+    if (lastLoaded[view] !== sig) silent = false;
+    lastLoaded[view] = sig;
+    if (view === 'vehicle') {
+      if (!period.hours && !date) {
+        showStatus('Selle seadme kohta ei leitud veel andmeid.', false);
+        return;
+      }
+      await loadDashboard(key, period.hours ? { hours: period.hours } : { date }, silent);
+    } else {
+      await loadMacUsage(key, silent, period.hours ? { hours: period.hours } : { date });
+    }
+  }
+
+  document.getElementById('date-picker').addEventListener('change', (e) => {
+    if (!e.target.value) return;
+    period.date = e.target.value;
+    period.hours = null;
+    loadCurrent(false);
+  });
+  document.querySelectorAll('#window-toggle .window-btn').forEach((b) => b.addEventListener('click', () => {
+    period.hours = Number(b.dataset.hours);
+    loadCurrent(false);
+  }));
+
+  async function switchView(view) {
     currentView = view;
     document.querySelectorAll('.view-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
-    document.getElementById('vehicle-controls').hidden = view !== 'vehicle';
-    document.getElementById('attachment-controls').hidden = view !== 'attachment';
-    document.getElementById('meta-vehicle').hidden = view !== 'vehicle';
-    document.getElementById('meta-attachment').hidden = view !== 'attachment';
+    document.getElementById('imei-picker').hidden = view !== 'vehicle';
+    document.getElementById('mac-picker').hidden = view !== 'attachment';
+    document.getElementById(view === 'vehicle' ? 'attachment-content' : 'dashboard-content').hidden = true;
 
-    if (view === 'vehicle') {
-      document.getElementById('attachment-content').hidden = true;
-      if (vehicleInitialized) {
+    try {
+      const ready = view === 'vehicle'
+        ? (vehicleInitialized || await initVehicle())
+        : (attachmentInitialized || await initAttachment());
+      if (!ready || view !== currentView) return;
+      if (lastLoaded[view]) {
+        // show what was there right away; loadCurrent reloads loudly if the period changed meanwhile
         document.getElementById('status-msg').hidden = true;
-        document.getElementById('dashboard-content').hidden = false;
-      } else {
-        initVehicle();
+        document.getElementById(view === 'vehicle' ? 'dashboard-content' : 'attachment-content').hidden = false;
       }
-    } else {
-      document.getElementById('dashboard-content').hidden = true;
-      if (attachmentInitialized) {
-        document.getElementById('status-msg').hidden = true;
-        document.getElementById('attachment-content').hidden = false;
-      } else {
-        initAttachment();
-      }
+      await loadCurrent(!!lastLoaded[view]);
+    } catch (e) {
+      console.error('[dashboard] init failed:', e);
+      showStatus('Ei saanud ühendust API-ga.', true);
     }
   }
 
@@ -1167,13 +1369,7 @@
     btn.disabled = true;
     icon.classList.add('spinning');
     try {
-      if (currentView === 'vehicle') {
-        if (currentImei && (currentDate || currentHours)) {
-          await loadDashboard(currentImei, currentHours ? { hours: currentHours } : { date: currentDate }, true);
-        }
-      } else {
-        if (currentMac) await loadMacUsage(currentMac, true, currentMacHours);
-      }
+      if (lastLoaded[currentView]) await loadCurrent(true);
       // Keep the spin visible for a moment even on very fast responses,
       // so a click always reads as "something happened".
       await new Promise((r) => setTimeout(r, 350));
@@ -1185,7 +1381,7 @@
   document.getElementById('refresh-btn').addEventListener('click', refreshCurrent);
   setInterval(refreshCurrent, 30000);
 
-  initVehicle();
+  switchView('vehicle');
 })();
 </script>
 </body>

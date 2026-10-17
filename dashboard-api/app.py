@@ -1,3 +1,4 @@
+import bisect
 import math
 import os
 from datetime import datetime, timedelta, timezone
@@ -50,6 +51,68 @@ def downsample(rows, target=380):
     out = rows[0::step]
     if rows and rows[-1] is not out[-1]:
         out.append(rows[-1])
+    return out
+
+
+FROZEN_MIN_S = 60       # shortest frozen-position stretch worth reporting
+FROZEN_MIN_KM = 0.1     # ...and the CAN-integrated distance it must hide
+FROZEN_CAN_KMH = 3      # CAN speed above this counts as actually moving
+
+
+def find_frozen_positions(rows):
+    """Find stretches where the reported position stays bit-for-bit identical
+    while CAN speed says the vehicle is moving. That is the tracker's static
+    navigation freezing coordinates (e.g. ignition wrongly reported off), so
+    the real route for that time is missing and the map shows a jump after it."""
+    out = []
+
+    def flush(run):
+        # A frozen run can also contain genuine standstill (position parked,
+        # CAN speed 0) - split on stationary stretches so each reported
+        # interval only covers the time the vehicle was actually moving.
+        part = []
+        for r in run:
+            if (r.get("can_speed") or 0) < FROZEN_CAN_KMH:
+                continue
+            if part and (r["time"] - part[-1]["time"]).total_seconds() > FROZEN_MIN_S:
+                report(run, part)
+                part = []
+            part.append(r)
+        report(run, part)
+
+    def report(run, moving):
+        if len(moving) < 2:
+            return
+        start, end = moving[0]["time"], moving[-1]["time"]
+        if (end - start).total_seconds() < FROZEN_MIN_S:
+            return
+        km = 0.0
+        for a, b in zip(run, run[1:]):
+            if a["time"] < start or b["time"] > end:
+                continue
+            dt = min((b["time"] - a["time"]).total_seconds(), 30)
+            km += float(a.get("can_speed") or 0) * dt / 3600
+        if km < FROZEN_MIN_KM:
+            return
+        out.append({
+            "from": int(start.timestamp() * 1000),
+            "to": int(end.timestamp() * 1000),
+            "lat": run[0]["latitude"], "lon": run[0]["longitude"],
+            "max_can_speed": max(float(r["can_speed"]) for r in moving),
+            "km_est": round(km, 2),
+        })
+
+    run = []
+    for r in rows:
+        if r["latitude"] is None or r["longitude"] is None:
+            continue
+        if run and (r["latitude"], r["longitude"]) == (run[-1]["latitude"], run[-1]["longitude"]) \
+                and (r["time"] - run[-1]["time"]).total_seconds() <= GAP_S:
+            run.append(r)
+        else:
+            flush(run)
+            run = [r]
+    flush(run)
     return out
 
 
@@ -112,6 +175,14 @@ WHERE measurement='data' AND device IS NOT NULL
 ORDER BY device
 """
 
+MAC_DATES_SQL = """
+SELECT DISTINCT (time AT TIME ZONE 'Europe/Tallinn')::date AS day
+FROM measurements
+WHERE measurement IN ('eye1','eye2','eye3') AND field='mac' AND value_text=%s
+ORDER BY day DESC
+LIMIT 60
+"""
+
 MACS_SQL = """
 SELECT DISTINCT value_text AS mac
 FROM measurements
@@ -122,26 +193,44 @@ ORDER BY mac
 # Every EYE record for this attachment (identified by MAC), wherever and
 # whenever it was seen - joins the "mac" field's (device, measurement, time)
 # back onto the other fields sharing that same key, since each is its own
-# row in the long/narrow schema. %(start)s is optional (NULL = full
-# history) so the same query serves both the "all time" and "last N hours"
-# window views.
+# row in the long/narrow schema. %(start)s / %(end)s are optional (NULL =
+# unbounded) so the same query serves the "all time", "last N hours" and
+# single-day views.
 MAC_USAGE_SQL = """
 WITH mac_keys AS (
   SELECT device, measurement, time
   FROM measurements
   WHERE measurement IN ('eye1','eye2','eye3') AND field='mac' AND value_text=%(mac)s
     AND (%(start)s::timestamptz IS NULL OR time >= %(start)s)
+    AND (%(end)s::timestamptz IS NULL OR time < %(end)s)
+), eye AS (
+  SELECT k.device, k.measurement, k.time,
+    MAX(CASE WHEN m.field='eye_temperature_c' THEN m.value_double END) AS temp,
+    MAX(CASE WHEN m.field='eye_humidity_percent' THEN m.value_bigint END) AS humidity,
+    MAX(CASE WHEN m.field='eye_battery_percent' THEN m.value_bigint END) AS battery,
+    MAX(CASE WHEN m.field='eye_battery_v' THEN m.value_double END) AS battery_v,
+    BOOL_OR(CASE WHEN m.field='eye_magnet_closed' THEN m.value_bool END) AS magnet_closed,
+    MAX(CASE WHEN m.field='latitude' THEN m.value_double END) AS eye_lat,
+    MAX(CASE WHEN m.field='longitude' THEN m.value_double END) AS eye_lon
+  FROM mac_keys k
+  JOIN measurements m ON m.device = k.device AND m.measurement = k.measurement AND m.time = k.time
+  GROUP BY k.device, k.measurement, k.time
 )
-SELECT k.device, k.measurement, k.time,
-  MAX(CASE WHEN m.field='eye_temperature_c' THEN m.value_double END) AS temp,
-  MAX(CASE WHEN m.field='eye_humidity_percent' THEN m.value_bigint END) AS humidity,
-  MAX(CASE WHEN m.field='eye_battery_percent' THEN m.value_bigint END) AS battery,
-  MAX(CASE WHEN m.field='eye_battery_v' THEN m.value_double END) AS battery_v,
-  BOOL_OR(CASE WHEN m.field='eye_magnet_closed' THEN m.value_bool END) AS magnet_closed
-FROM mac_keys k
-JOIN measurements m ON m.device = k.device AND m.measurement = k.measurement AND m.time = k.time
-GROUP BY k.device, k.measurement, k.time
-ORDER BY k.time
+-- EYE records only carry the host tractor's coordinates since the gateway
+-- started adding them; older ones borrow them from the tractor's own record
+-- with the same timestamp (both come from the same AVL record).
+SELECT e.device, e.measurement, e.time, e.temp, e.humidity, e.battery, e.battery_v, e.magnet_closed,
+  COALESCE(e.eye_lat, p.lat) AS latitude,
+  COALESCE(e.eye_lon, p.lon) AS longitude
+FROM eye e
+LEFT JOIN LATERAL (
+  SELECT MAX(CASE WHEN d.field='latitude' THEN d.value_double END) AS lat,
+         MAX(CASE WHEN d.field='longitude' THEN d.value_double END) AS lon
+  FROM measurements d
+  WHERE d.device = e.device AND d.measurement = 'data' AND d.time = e.time
+    AND d.field IN ('latitude', 'longitude')
+) p ON e.eye_lat IS NULL
+ORDER BY e.time
 """
 
 
@@ -320,6 +409,7 @@ def build_dashboard_range(imei, start_utc, end_utc):
         for r in data_rows if r["gps_ok"]
     ]
     route = downsample(route_pts, 600)
+    route_frozen = find_frozen_positions(data_rows)
 
     eye_by_sensor = {"eye1": [], "eye2": [], "eye3": []}
     for r in eye_rows:
@@ -362,36 +452,110 @@ def build_dashboard_range(imei, start_utc, end_utc):
             "magnet_closed_now": prev,
         }
 
-    return {"kpi": kpi, "series": series, "route": route, "eye": eye_series, "eyeStats": eye_stats}
+    return {"kpi": kpi, "series": series, "route": route, "routeFrozen": route_frozen,
+            "eye": eye_series, "eyeStats": eye_stats}
 
 
-def build_mac_usage(mac, hours=None):
+def vehicle_data_for_sightings(sightings):
+    """Tractor KPIs (records, distance, moving time, max speed) summed over
+    the stretches the attachment was seen on each tractor - i.e. what the
+    tractor did while this attachment was hitched to it - plus the tractor's
+    route for each of those stretches. Returns (kpi_or_None, routes)."""
+    total = None
+    routes = []
+    for s in sightings:
+        if s["device"] is None:
+            continue
+        start = datetime.fromisoformat(s["first_seen"])
+        end = datetime.fromisoformat(s["last_seen"]) + timedelta(seconds=1)
+        b = build_dashboard_range(s["device"], start, end)
+        if not b:
+            continue
+        if b["route"]:
+            routes.append({"device": s["device"], "day": s["day"],
+                           "points": b["route"], "frozen": b["routeFrozen"]})
+        k = b["kpi"]
+        if total is None:
+            total = {"record_count": 0, "start": k["start"], "end": k["end"], "total_distance_km": 0.0,
+                     "moving_minutes": 0.0, "max_speed_kmh": 0.0, "ignition_cycles": 0, "_speed_x_min": 0.0}
+        total["record_count"] += k["record_count"]
+        total["start"] = min(total["start"], k["start"])
+        total["end"] = max(total["end"], k["end"])
+        total["total_distance_km"] += k["total_distance_km"]
+        total["moving_minutes"] += k["moving_minutes"]
+        total["max_speed_kmh"] = max(total["max_speed_kmh"], k["max_speed_kmh"])
+        total["ignition_cycles"] += k["ignition_cycles"]
+        total["_speed_x_min"] += k["avg_speed_kmh_when_moving"] * k["moving_minutes"]
+    if total is None:
+        return None, routes
+    sxm = total.pop("_speed_x_min")
+    total["avg_speed_kmh_when_moving"] = round(sxm / total["moving_minutes"], 1) if total["moving_minutes"] else 0
+    total["total_distance_km"] = round(total["total_distance_km"], 2)
+    total["moving_minutes"] = round(total["moving_minutes"], 1)
+    return total, routes
+
+
+# An attachment's EYE sensor can be in BLE range of several tractors at once
+# (e.g. all parked in the yard) - a record is ambiguous when another tractor
+# also received the same sensor within this many seconds (records come every
+# ~5 min), and then isn't attributed to any tractor.
+AMBIGUOUS_WINDOW_S = 360
+
+
+def mark_ambiguous(rows):
+    """Sets r["ambiguous"] on rows (sorted by time) seen by more than one device."""
+    times = {}
+    for r in rows:
+        times.setdefault(r["device"], []).append(r["time"].timestamp())
+    for r in rows:
+        t = r["time"].timestamp()
+        r["ambiguous"] = False
+        for dev, ts in times.items():
+            if dev == r["device"]:
+                continue
+            i = bisect.bisect_left(ts, t - AMBIGUOUS_WINDOW_S)
+            if i < len(ts) and ts[i] <= t + AMBIGUOUS_WINDOW_S:
+                r["ambiguous"] = True
+                break
+
+
+def build_mac_usage(mac, hours=None, date_str=None):
     """History for one EYE sensor (attachment), identified by its MAC,
     across every tractor (device) it has ever been seen on - answers 'how
     long was this attachment used, independent of tractor'. With `hours`
-    set, restricted to the last N hours from now instead of full history."""
-    start_utc = datetime.now(timezone.utc) - timedelta(hours=hours) if hours else None
+    set, restricted to the last N hours from now; with `date_str`, to that
+    Tallinn calendar day; otherwise full history."""
+    start_utc = end_utc = None
+    if hours:
+        start_utc = datetime.now(timezone.utc) - timedelta(hours=hours)
+    elif date_str:
+        start_utc, end_utc = day_bounds_utc(date_str)
 
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            rows = fetch_rows(cur, MAC_USAGE_SQL, {"mac": mac, "start": start_utc})
+            rows = fetch_rows(cur, MAC_USAGE_SQL, {"mac": mac, "start": start_utc, "end": end_utc})
     finally:
         conn.close()
 
     if not rows:
         return None
 
+    mark_ambiguous(rows)
+    attributed = [r for r in rows if not r["ambiguous"]]
+
     # Sightings: contiguous stretches on the same device, split into
-    # per-day segments for a readable summary table.
+    # per-day segments for a readable summary table. Ambiguous stretches
+    # get device None (seen by several tractors, not attributed).
     sightings = []
     cur_key = None
     for r in rows:
         day = r["time"].astimezone(TZ).date().isoformat()
-        key = (r["device"], day)
+        device = None if r["ambiguous"] else r["device"]
+        key = (device, day)
         if key != cur_key:
             sightings.append({
-                "device": r["device"], "day": day,
+                "device": device, "day": day,
                 "first_seen": r["time"].isoformat(), "last_seen": r["time"].isoformat(),
                 "records": 0,
             })
@@ -420,7 +584,8 @@ def build_mac_usage(mac, hours=None):
         "first_seen": rows[0]["time"].isoformat(),
         "last_seen": rows[-1]["time"].isoformat(),
         "record_count": len(rows),
-        "device_count": len({r["device"] for r in rows}),
+        "device_count": len({r["device"] for r in attributed}),
+        "ambiguous_count": len(rows) - len(attributed),
         "day_count": len({r["time"].astimezone(TZ).date() for r in rows}),
         "temp_min": min(temps) if temps else None,
         "temp_max": max(temps) if temps else None,
@@ -440,8 +605,8 @@ def build_mac_usage(mac, hours=None):
             broke = False
             if i > 0:
                 prev = rows_[i - 1]
-                gap_s = (r["time"] - prev["time"]).total_seconds()
-                if gap_s > GAP_S or r["device"] != prev["device"]:
+                # same physical sensor whichever tractor relayed it - only data gaps break the line
+                if (r["time"] - prev["time"]).total_seconds() > GAP_S:
                     broke = True
             if broke:
                 pts.append({"x": x - 1, "y": None})
@@ -456,7 +621,18 @@ def build_mac_usage(mac, hours=None):
         "magnet": to_xy(rows_ds, "magnet_closed"),  # bool -> 1.0 (kinni) / 0.0 (lahti)
     }
 
-    return {"stats": stats, "sightings": sightings, "series": series}
+    # Where the attachment itself was when each EYE reading came in.
+    eye_points = downsample([
+        {"lat": r["latitude"], "lon": r["longitude"], "t": int(r["time"].timestamp() * 1000),
+         "device": r["device"], "temp": r["temp"]}
+        for r in attributed
+        if r["latitude"] is not None and r["longitude"] is not None
+        and not (r["latitude"] == 0 and r["longitude"] == 0)
+    ], 500)
+
+    vehicle_kpi, routes = vehicle_data_for_sightings(sightings)
+    return {"stats": stats, "sightings": sightings, "series": series,
+            "vehicleKpi": vehicle_kpi, "routes": routes, "eyePoints": eye_points}
 
 
 @app.route("/api/imeis")
@@ -552,10 +728,35 @@ def api_mac_usage():
         except ValueError:
             return jsonify({"error": "invalid hours, expected a positive integer"}), 400
 
-    bundle = build_mac_usage(mac, hours)
+    date_str = request.args.get("date")
+    if date_str and not hours:
+        try:
+            datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            return jsonify({"error": "invalid date, expected YYYY-MM-DD"}), 400
+    else:
+        date_str = None
+
+    bundle = build_mac_usage(mac, hours, date_str)
     if bundle is None:
         return jsonify({"error": "no data for this mac"}), 404
     return jsonify(bundle)
+
+
+@app.route("/api/mac-dates")
+def api_mac_dates():
+    mac = request.args.get("mac")
+    if not mac:
+        return jsonify({"error": "mac is required"}), 400
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(MAC_DATES_SQL, (mac,))
+            dates = [row[0].isoformat() for row in cur.fetchall()]
+    finally:
+        conn.close()
+    return jsonify({"dates": dates})
 
 
 @app.route("/api/health")
