@@ -155,6 +155,16 @@ for on other Teltonika models; both were reverse-engineered against this
 specific device and firmware. `IO_NAMES` covers everything else. Adjust
 both if you connect a different device type.
 
+`IO_NAMES` is the FMC650's map. Other models reuse some IDs for different
+values (e.g. on FMC150, AVL 85 is engine RPM, not engine load), so
+`MODEL_IO_NAMES` holds per-model overrides, selected per IMEI via
+[imei_model.json](imei_model.json) (reloaded automatically, like
+`imei_eye_mac.json`). IMEIs not listed there use the FMC650 map:
+
+```json
+{ "862129089514594": "FMC150" }
+```
+
 ## Live dashboard (dashboard-api/)
 
 [dashboard-api/](dashboard-api/) is a small Flask API + a static HTML frontend

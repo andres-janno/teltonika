@@ -14,17 +14,19 @@ TCP_PORT = 5027
 # Teltonika devices resend an AVL record if they don't get our ACK in time
 # (e.g. our service restarted mid-transmission) - this dedupes those so a
 # retransmitted record doesn't get published/stored twice. Keyed by IMEI, an
-# LRU of recently published record timestamps; bounded so it can't grow
-# unbounded over a long-running process.
+# LRU of recently published record keys (timestamp + IO content - distinct
+# records can share a timestamp, e.g. FMC150 EYE Beacon records next to a
+# periodic one); bounded so it can't grow unbounded over a long-running process.
 RECENT_TIMESTAMPS_PER_IMEI = 100
 recent_timestamps = {}
 
-def is_duplicate_record(imei, ts_ms):
+def is_duplicate_record(imei, rec):
+    key = (rec["timestamp"], json.dumps([rec["raw_io"], rec["eye_raw_io"]], sort_keys=True))
     seen = recent_timestamps.setdefault(imei, collections.OrderedDict())
-    if ts_ms in seen:
-        seen.move_to_end(ts_ms)
+    if key in seen:
+        seen.move_to_end(key)
         return True
-    seen[ts_ms] = None
+    seen[key] = None
     if len(seen) > RECENT_TIMESTAMPS_PER_IMEI:
         seen.popitem(last=False)
     return False
@@ -108,7 +110,7 @@ EYE_SLOTS = range(1, MAX_EYE_SLOTS + 1)
 # or an object keyed by slot:
 #   {"<imei>": {"1": "AA:BB:CC:DD:EE:FF", "2": "11:22:33:44:55:66"}}
 # Edit IMEI_EYE_MAC_FILE to reflect a swap; it is reloaded automatically (see
-# reload_imei_eye_mac_periodically) without needing to restart the service.
+# reload_configs_periodically) without needing to restart the service.
 IMEI_EYE_MAC_FILE = "imei_eye_mac.json"
 IMEI_EYE_MAC_RELOAD_SECONDS = 30
 imei_eye_mac = {}
@@ -132,27 +134,39 @@ last_seen_eye_mac = {}
 # than whatever subset of fields happened to be in that one record.
 last_seen_eye_values = {}
 
-def load_imei_eye_mac():
+# Device model per IMEI, e.g. {"862129089514594": "FMC150"} - selects the
+# model's AVL ID overrides (MODEL_IO_NAMES). Not derivable from the IMEI or
+# the data stream. IMEIs not listed are treated as FMC650. Reloaded
+# automatically like IMEI_EYE_MAC_FILE.
+IMEI_MODEL_FILE = "imei_model.json"
+imei_model = {}
+
+# Config files reloaded on change: path -> dict updated in place.
+RELOADABLE_CONFIGS = {IMEI_EYE_MAC_FILE: imei_eye_mac, IMEI_MODEL_FILE: imei_model}
+
+def load_config(path):
+    target = RELOADABLE_CONFIGS[path]
     try:
-        with open(IMEI_EYE_MAC_FILE) as f:
+        with open(path) as f:
             data = json.load(f)
-        imei_eye_mac.clear()
-        imei_eye_mac.update(data)
+        target.clear()
+        target.update(data)
     except FileNotFoundError:
         pass
     except (json.JSONDecodeError, OSError) as e:
-        print(f"[-] Failed to load {IMEI_EYE_MAC_FILE}: {e}")
+        print(f"[-] Failed to load {path}: {e}")
 
-async def reload_imei_eye_mac_periodically():
-    last_mtime = None
+async def reload_configs_periodically():
+    last_mtime = {}
     while True:
-        try:
-            mtime = os.stat(IMEI_EYE_MAC_FILE).st_mtime
-        except FileNotFoundError:
-            mtime = None
-        if mtime != last_mtime:
-            load_imei_eye_mac()
-            last_mtime = mtime
+        for path in RELOADABLE_CONFIGS:
+            try:
+                mtime = os.stat(path).st_mtime
+            except FileNotFoundError:
+                mtime = None
+            if mtime != last_mtime.get(path, 0):
+                load_config(path)
+                last_mtime[path] = mtime
         await asyncio.sleep(IMEI_EYE_MAC_RELOAD_SECONDS)
 
 # Which AVL IDs carry each Bluetooth 4.0 sensor SLOT's EYE readings, and
@@ -206,7 +220,8 @@ EYE_SLOT_FIELDS = {
     10809: (2, "eye_magnet_closed"),
     10810: (3, "eye_magnet_closed"),
     10811: (4, "eye_magnet_closed"),
-    10824: (1, "eye_battery_v"),         # mV -> V, slot 1 only (observed 3040); other slots unknown
+    10824: (1, "eye_battery_v"),         # mV -> V (observed 3010)
+    10825: (2, "eye_battery_v"),         # mV -> V (observed 3040); slots 3/4 likely 10826/10827 but those collide with legacy IDs below - unconfirmed
 }
 
 # IO IDs deliberately not published at all: internal backup battery
@@ -232,6 +247,14 @@ EYE_ERROR_SENTINEL = 32767
 # attempt), this is "nothing to read" - the whole slot's batch is discarded
 # in translate_io_values() so it doesn't overwrite the last real reading or
 # get published/stored as bogus zeros.
+#
+# The "EYE Sensor by MAC" IDs (108xx, FMC150 and FMC650 alike) have no
+# battery percent; they signal a sensor that isn't being received with
+# battery 0 mV (first record after it drops out, all fields 0) and then
+# temperature 25000 (250.00 C), humidity 250 %, battery 250 mV - observed
+# on both tractors at once when one sensor went missing. Handled the same way.
+EYE_NOT_FOUND_TEMP_C = 250.0
+EYE_NOT_FOUND_HUMIDITY = 250
 
 # Teltonika IO ID lookup table (English parameter names), for everything
 # that ISN'T one of the per-slot EYE fields above.
@@ -283,6 +306,19 @@ IO_NAMES = {
     # Raw Beacon data
     385: "ble_beacon_raw_hex",       # Simple beacon mode
     548: "ble_advanced_beacon_raw_hex"  # Advanced beacon mode (Beacon Capturing Configuration)
+}
+
+# Per-model AVL ID overrides on top of IO_NAMES (which is FMC650's map).
+# FMC150 uses Teltonika's FMB140/FMC150 CAN ID table - confirmed against
+# our data: 85 ranges 0-1026 (RPM; on FMC650 it's load 15-100 %), no 88,
+# 89 sits at 35-40 (fuel level %). Values are published raw, no scaling.
+MODEL_IO_NAMES = {
+    "FMC150": {
+        81: "can_speed_kmh",           # km/h, CAN vehicle speed
+        85: "engine_rpm",              # rpm
+        89: "fuel_level_percent",      # %
+        107: "fuel_consumed_counted",  # counter, unit unconfirmed (likely 0.1 l)
+    },
 }
 
 # IO IDs that carry EYE sensor data rather than FMC650 device data - includes
@@ -408,7 +444,7 @@ def resolve_slot_macs(imei, eye_raw_io):
 
     return result
 
-def translate_io_values(io_data):
+def translate_io_values(io_data, model_io_names=None):
     """Translates raw IO IDs into named values. Per-slot EYE fields
     (EYE_SLOT_FIELDS) go into eye_slot_values[<slot>], one dict per physical
     sensor - never mixed together. Anything else in EYE_IO_IDS (unidentified
@@ -421,13 +457,22 @@ def translate_io_values(io_data):
         # Convert raw values into their logical units
         if io_id in DISABLED_IO_IDS:
             continue
+        elif isinstance(raw_val, str):
+            # Variable-length (X-byte, Codec 8E) element, kept as hex. Its ID
+            # may collide with a numeric one below (e.g. FMC150's EYE Beacon
+            # data) - never run numeric conversions on it, or the whole
+            # packet fails, goes un-ACKed and the device resends it forever.
+            # EYE ones stay visible in the raw dump only.
+            if io_id in EYE_IO_IDS:
+                continue
+            val = raw_val
         elif io_id in EYE_SLOT_FIELDS and raw_val == EYE_ERROR_SENTINEL:
             # 32767 (0x7FFF, int16 max) shows up on any EYE slot field when
             # that reading failed (e.g. sensor briefly out of BLE range) -
             # skip it rather than publish a bogus temperature/humidity/magnet
             # value; the previous good reading stays cached downstream.
             continue
-        elif io_id in (66, 26, 30, 10828, 10824):
+        elif io_id in (66, 26, 30, 10828, 10824, 10825):
             # Millivolts to volts (e.g. 11586 mV -> 11.586 V)
             val = round(raw_val / 1000.0, 3)
         elif io_id in (239, 240):
@@ -457,16 +502,19 @@ def translate_io_values(io_data):
         elif io_id in EYE_IO_IDS:
             continue
         else:
-            name = IO_NAMES.get(io_id, f"io_{io_id}")
+            name = (model_io_names or {}).get(io_id) or IO_NAMES.get(io_id, f"io_{io_id}")
             fmc_values[name] = val
 
     for slot, vals in eye_slot_values.items():
-        if vals.get("eye_battery_percent") == 0:
+        if (vals.get("eye_battery_percent") == 0
+                or vals.get("eye_battery_v") == 0
+                or vals.get("eye_temperature_c") == EYE_NOT_FOUND_TEMP_C
+                or vals.get("eye_humidity_percent") == EYE_NOT_FOUND_HUMIDITY):
             eye_slot_values[slot] = {}
 
     return fmc_values, eye_slot_values
 
-def parse_codec8(data):
+def parse_codec8(data, model_io_names=None):
     codec_id = data[0]
     num_records = data[1]
     offset = 2
@@ -520,7 +568,7 @@ def parse_codec8(data):
                     io_data[io_id] = data[offset:offset + vlen].hex()
                     offset += vlen
 
-        fmc_values, eye_slot_values = translate_io_values(io_data)
+        fmc_values, eye_slot_values = translate_io_values(io_data, model_io_names)
         fmc_raw_io = {k: v for k, v in io_data.items() if k not in EYE_IO_IDS}
         eye_raw_io = {k: v for k, v in io_data.items() if k in EYE_IO_IDS}
 
@@ -563,14 +611,14 @@ async def handle_teltonika(reader, writer):
             payload = await reader.readexactly(data_length + 4)
             data_part = payload[:data_length]
 
-            num_records, records = parse_codec8(data_part)
+            num_records, records = parse_codec8(data_part, MODEL_IO_NAMES.get(imei_model.get(imei)))
 
             writer.write(struct.pack(">I", num_records))
             await writer.drain()
 
             fmc_topic = f"teltonika/{imei}/data"
             for rec in records:
-                if is_duplicate_record(imei, rec["timestamp"]):
+                if is_duplicate_record(imei, rec):
                     continue
 
                 fmc_values = rec.pop("values")
@@ -606,6 +654,22 @@ async def handle_teltonika(reader, writer):
                 if eye_raw_io:
                     slot_macs = resolve_slot_macs(imei, eye_raw_io)
 
+                    # EYE sensors have no GPS of their own - tag their
+                    # records with the host FMC650's position. Falls back to
+                    # the last accepted fix when this record's fix was
+                    # dropped as a glitch or is a no-fix (0,0).
+                    if not glitch and not (rec["latitude"] == 0 and rec["longitude"] == 0):
+                        host_pos = {
+                            "latitude": rec["latitude"],
+                            "longitude": rec["longitude"],
+                            "altitude": rec["altitude"],
+                        }
+                    elif imei in last_good_fix:
+                        _, lat, lon, _ = last_good_fix[imei]
+                        host_pos = {"latitude": lat, "longitude": lon}
+                    else:
+                        host_pos = {}
+
                     for slot in EYE_SLOTS:
                         if not eye_slot_values[slot]:
                             # Nothing fresh for this slot in THIS record -
@@ -624,8 +688,10 @@ async def handle_teltonika(reader, writer):
                         eye_rec = {
                             "timestamp": rec["timestamp"],
                             "datetime": rec["datetime"],
-                            "mac": slot_macs[slot],
-                            **merged
+                            # omitted when the slot has no known MAC - a null would be stored as the text "null"
+                            **({"mac": slot_macs[slot]} if slot_macs[slot] else {}),
+                            **host_pos,
+                            **merged  # sensor's own coordinates, if it ever sends any, win
                         }
                         eye_topic = f"teltonika/{imei}/eye{slot}"
                         mqtt_client.publish(eye_topic, json.dumps(eye_rec))
@@ -642,8 +708,9 @@ async def handle_teltonika(reader, writer):
         await writer.wait_closed()
 
 async def main():
-    load_imei_eye_mac()
-    asyncio.create_task(reload_imei_eye_mac_periodically())
+    for path in RELOADABLE_CONFIGS:
+        load_config(path)
+    asyncio.create_task(reload_configs_periodically())
 
     server = await asyncio.start_server(handle_teltonika, "0.0.0.0", TCP_PORT)
     print(f"[*] Teltonika TCP -> MQTT gateway listening on port {TCP_PORT}...")
