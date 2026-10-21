@@ -444,13 +444,27 @@
 
     <div class="panel" id="engine-panel" style="margin-bottom:20px">
       <h2>Mootor</h2>
-      <p class="panel-sub">Pöörded, kütusekulu ja koormus (CAN/OBD andmed, kui seade neid saadab)</p>
-      <div class="panel-sub" style="margin-bottom:4px">Mootori pöörded (rpm)</div>
-      <div class="chart-box short"><canvas id="chart-rpm"></canvas></div>
-      <div class="panel-sub" style="margin:12px 0 4px">Kütusekulu (l/h)</div>
-      <div class="chart-box short"><canvas id="chart-fuel"></canvas></div>
-      <div class="panel-sub" style="margin:12px 0 4px">Mootori koormus (%)</div>
-      <div class="chart-box short"><canvas id="chart-load"></canvas></div>
+      <p class="panel-sub">Pöörded, kütus ja koormus (CAN/OBD andmed, kui seade neid saadab)</p>
+      <div id="engine-rpm">
+        <div class="panel-sub" style="margin-bottom:4px">Mootori pöörded (rpm)</div>
+        <div class="chart-box short"><canvas id="chart-rpm"></canvas></div>
+      </div>
+      <div id="engine-fuel">
+        <div class="panel-sub" style="margin:12px 0 4px">Kütusekulu (l/h)</div>
+        <div class="chart-box short"><canvas id="chart-fuel"></canvas></div>
+      </div>
+      <div id="engine-fuel_used">
+        <div class="panel-sub" style="margin:12px 0 4px" id="fuel-used-label">Kulunud kütus perioodi algusest (l)</div>
+        <div class="chart-box short"><canvas id="chart-fuel_used"></canvas></div>
+      </div>
+      <div id="engine-fuel_level">
+        <div class="panel-sub" style="margin:12px 0 4px">Kütusetase (%)</div>
+        <div class="chart-box short"><canvas id="chart-fuel_level"></canvas></div>
+      </div>
+      <div id="engine-load">
+        <div class="panel-sub" style="margin:12px 0 4px">Mootori koormus (%)</div>
+        <div class="chart-box short"><canvas id="chart-load"></canvas></div>
+      </div>
     </div>
 
     <div class="panel" style="margin-bottom:20px">
@@ -648,25 +662,34 @@
       options: baseLineOptions('')
     });
 
-    const hasEngine = ['rpm', 'fuel', 'load'].some((k) => (bundle.series[k] || []).some((p) => p.y != null));
+    const engineCharts = [
+      ['rpm', 'Pöörded', 'rpm', '--slot-1'],
+      ['fuel', 'Kütusekulu', 'l/h', '--slot-2'],
+      ['fuel_used', 'Kulunud kütus', 'l', '--slot-2'],
+      ['fuel_level', 'Kütusetase', '%', '--slot-3'],
+      ['load', 'Koormus', '%', '--slot-3'],
+    ];
+    let hasEngine = false;
+    engineCharts.forEach(([key, label, unit, color]) => {
+      const pts = bundle.series[key] || [];
+      const has = pts.some((p) => p.y != null);
+      document.getElementById('engine-' + key).style.display = has ? '' : 'none';
+      if (!has) return;
+      hasEngine = true;
+      // CAN series are sparse; pin all engine charts to the speed chart's
+      // time range so they line up with each other.
+      const opts = baseLineOptions(unit);
+      const spd = bundle.series.spd;
+      if (spd.length) { opts.scales.x.min = spd[0].x; opts.scales.x.max = spd[spd.length - 1].x; }
+      charts[key] = new Chart(document.getElementById('chart-' + key), {
+        type: 'line',
+        data: { datasets: [lineDataset(label, pts, cv(color))] },
+        options: opts
+      });
+    });
     document.getElementById('engine-panel').style.display = hasEngine ? '' : 'none';
-    if (hasEngine) {
-      charts.rpm = new Chart(document.getElementById('chart-rpm'), {
-        type: 'line',
-        data: { datasets: [lineDataset('Pöörded', bundle.series.rpm, cv('--slot-1'))] },
-        options: baseLineOptions('rpm')
-      });
-      charts.fuel = new Chart(document.getElementById('chart-fuel'), {
-        type: 'line',
-        data: { datasets: [lineDataset('Kütusekulu', bundle.series.fuel, cv('--slot-2'))] },
-        options: baseLineOptions('l/h')
-      });
-      charts.load = new Chart(document.getElementById('chart-load'), {
-        type: 'line',
-        data: { datasets: [lineDataset('Koormus', bundle.series.load, cv('--slot-3'))] },
-        options: baseLineOptions('%')
-      });
-    }
+    document.getElementById('fuel-used-label').textContent = 'Kulunud kütus perioodi algusest (l)' +
+      (bundle.kpi.fuel_used_l != null ? ' — kokku ' + bundle.kpi.fuel_used_l.toLocaleString('et-EE') + ' l' : '');
 
   }
 

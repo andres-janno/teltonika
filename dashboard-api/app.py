@@ -54,6 +54,9 @@ def downsample(rows, target=380):
     return out
 
 
+FUEL_COUNTER_L = 0.1    # litres per step of fuel_consumed_counted (AVL 107)
+FUEL_LEVEL_SETTLE_S = 120  # ignore CAN fuel level until ignition has been on this long
+
 FROZEN_MIN_S = 60       # shortest frozen-position stretch worth reporting
 FROZEN_MIN_KM = 0.1     # ...and the CAN-integrated distance it must hide
 FROZEN_CAN_KMH = 3      # CAN speed above this counts as actually moving
@@ -140,6 +143,8 @@ SELECT
   MAX(CASE WHEN field='engine_rpm' THEN COALESCE(value_double, value_bigint) END) AS rpm,
   MAX(CASE WHEN field='fuel_rate_lph' THEN COALESCE(value_double, value_bigint) END) AS fuel_rate,
   MAX(CASE WHEN field='engine_load_percent' THEN COALESCE(value_double, value_bigint) END) AS engine_load,
+  MAX(CASE WHEN field='fuel_level_percent' THEN COALESCE(value_double, value_bigint) END) AS fuel_level,
+  MAX(CASE WHEN field='fuel_consumed_counted' THEN COALESCE(value_double, value_bigint) END) AS fuel_counter,
   MAX(CASE WHEN field='can_speed_kmh' THEN COALESCE(value_double, value_bigint) END) AS can_speed
 FROM measurements
 WHERE measurement='data' AND device=%s AND time >= %s AND time < %s
@@ -393,15 +398,52 @@ def build_dashboard_range(imei, start_utc, end_utc):
             pts.append({"x": x, "y": float(val) if val is not None else None})
         return pts
 
+    # FMC150 CAN values (fuel_consumed_counted, AVL 107) come as a counter in
+    # 0.1 l steps, not a rate. Turn it into litres used since the window start,
+    # summing only forward steps so a counter reset doesn't go negative.
+    fuel_used = 0.0
+    prev_counter = None
+    for r in data_rows:
+        c = r["fuel_counter"]
+        r["fuel_used"] = None
+        if c is None:
+            continue
+        if prev_counter is not None and c > prev_counter:
+            fuel_used += (float(c) - float(prev_counter)) * FUEL_COUNTER_L
+        prev_counter = c
+        r["fuel_used"] = round(fuel_used, 1)
+    kpi["fuel_used_l"] = round(fuel_used, 1) if prev_counter is not None else None
+
+    # CAN fuel level is junk with ignition off (bus asleep, reports 0-3 %) and
+    # ramps up from 0 for a minute or two after power-up (gauge damping), so
+    # only trust it once ignition has been on for FUEL_LEVEL_SETTLE_S.
+    ign_since = None
+    for r in data_rows:
+        if not r["ignition"]:
+            ign_since = None
+        elif ign_since is None:
+            ign_since = r["time"]
+        if r["fuel_level"] is not None and (
+                ign_since is None or (r["time"] - ign_since).total_seconds() < FUEL_LEVEL_SETTLE_S):
+            r["fuel_level"] = None
+
+    def sparse_xy(key):
+        # CAN fields are only present on some records; plotting them on the
+        # full row set leaves nulls between every sample and breaks the line.
+        rows = [r for r in data_rows if r[key] is not None]
+        return to_xy(downsample(rows, 380), key)
+
     data_ds = downsample(data_rows, 380)
     series = {
         "spd": to_xy(data_ds, "spd"),
         "volt": to_xy(data_ds, "voltage"),
         "sat": to_xy(data_ds, "satellites"),
         "hdop": to_xy(data_ds, "hdop"),
-        "rpm": to_xy(data_ds, "rpm"),
-        "fuel": to_xy(data_ds, "fuel_rate"),
-        "load": to_xy(data_ds, "engine_load"),
+        "rpm": sparse_xy("rpm"),
+        "fuel": sparse_xy("fuel_rate"),
+        "load": sparse_xy("engine_load"),
+        "fuel_level": sparse_xy("fuel_level"),
+        "fuel_used": sparse_xy("fuel_used"),
     }
 
     route_pts = [
